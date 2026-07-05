@@ -1,5 +1,5 @@
 """
-Persistence layer – now includes `price_cache` for historical price data.
+Persistence layer: everything is stored in one Google Sheet, in separate tabs.
 """
 from __future__ import annotations
 import gspread
@@ -21,7 +21,7 @@ SHEET_SCHEMAS = {
     "transactions": ["date", "portfolio", "ticker", "type", "amount_note"],
     "backtest_history": ["date", "portfolio", "index_value"],
     "portfolio_settings": ["portfolio", "rebalance_frequency"],
-    "price_cache": ["ticker", "date", "close", "asset_type"],  # new
+    # price_cache is REMOVED
 }
 
 TICKER_COLUMNS = {"ticker"}
@@ -59,7 +59,7 @@ def read_df(tab_name: str) -> pd.DataFrame:
     if not records:
         return pd.DataFrame(columns=SHEET_SCHEMAS.get(tab_name, []))
     df = pd.DataFrame(records)
-    # Zero-pad ticker columns
+    # Zero-pad ticker columns to 6 digits
     for col in TICKER_COLUMNS:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
