@@ -22,7 +22,6 @@ SHEET_SCHEMAS = {
     "backtest_history": ["date", "portfolio", "index_value"],
     "portfolio_settings": ["portfolio", "rebalance_frequency"],
     "price_cache": ["ticker", "date", "close", "asset_type"],
-    # price_cache is REMOVED
 }
 
 TICKER_COLUMNS = {"ticker"}
