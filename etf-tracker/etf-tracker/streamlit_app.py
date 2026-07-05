@@ -12,26 +12,22 @@ st.set_page_config(
     initial_sidebar_state="collapsed",  # sidebar closed by default
 )
 
-# ----- Custom CSS to reduce top margin and tighten layout -----
+# ----- Custom CSS to adjust spacing (title lower) -----
 st.markdown(
     """
     <style>
-        /* Reduce top padding of the main container */
         .block-container {
-            padding-top: 1rem !important;
+            padding-top: 2.5rem !important;   /* increased from 1rem to lower content */
             padding-bottom: 0rem !important;
         }
-        /* Reduce title margin */
         h1 {
-            margin-top: -0.5rem !important;
+            margin-top: 0rem !important;      /* no negative margin */
             margin-bottom: 0.25rem !important;
         }
-        /* Reduce caption margin */
         .stCaption {
             margin-top: -0.25rem !important;
             margin-bottom: 0.5rem !important;
         }
-        /* Reduce subheader spacing */
         h2, h3 {
             margin-top: 0.5rem !important;
             margin-bottom: 0.25rem !important;
