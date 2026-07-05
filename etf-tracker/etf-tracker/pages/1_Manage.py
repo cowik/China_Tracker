@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime
+from datetime import date
 import os
 
 from utils import sheets_db, data_fetch, returns, auth
@@ -27,7 +27,6 @@ section = st.sidebar.radio(
     ],
 )
 
-# Map section name back to tab_name
 SECTION_TAB_MAP = {
     PORTFOLIO_LABELS["portfolio1_positions"]: "portfolio1_positions",
     PORTFOLIO_LABELS["portfolio2_positions"]: "portfolio2_positions",
@@ -38,7 +37,6 @@ POSITION_COLS = {
     "name": st.column_config.TextColumn("Name"),
     "asset_type": st.column_config.SelectboxColumn("Type", options=["stock", "etf"]),
     "weight": st.column_config.NumberColumn("Target weight (%)", min_value=0.0, max_value=100.0, step=0.5),
-    "cost_basis": st.column_config.NumberColumn("Cost basis (price paid)", min_value=0.0, step=0.01),
     "purchase_date": st.column_config.DateColumn("Purchase date"),
 }
 
@@ -60,10 +58,7 @@ def positions_editor(tab_name: str, label: str):
         format_func=lambda k: REBALANCE_OPTIONS[k],
         index=list(REBALANCE_OPTIONS.keys()).index(current_freq),
         key=f"rebal_{tab_name}",
-        help="How often to reset all positions back to their target weights. "
-             "Applies from your backtest's hand-off date (or your earliest "
-             "position's purchase date if you haven't uploaded a backtest) "
-             "up to today.",
+        help="How often to reset all positions back to their target weights.",
     )
     if chosen_freq != current_freq:
         sheets_db.save_rebalance_frequency(label, chosen_freq)
@@ -76,17 +71,13 @@ def positions_editor(tab_name: str, label: str):
         if col not in df.columns:
             df[col] = None
 
-    # Ensure ticker is string
     if not df.empty and "ticker" in df.columns:
         df["ticker"] = df["ticker"].astype(str).str.strip()
 
-    # Convert types for display
     if not df.empty:
         df["purchase_date"] = pd.to_datetime(df["purchase_date"], errors="coerce").dt.date
         df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
-        df["cost_basis"] = pd.to_numeric(df["cost_basis"], errors="coerce")
 
-    # Show weight sum warning only if there are positions
     if not df.empty:
         total_weight = df["weight"].sum()
         if abs(total_weight - 100) > 0.5:
@@ -96,7 +87,7 @@ def positions_editor(tab_name: str, label: str):
     else:
         st.caption("No positions yet – add rows below using the editor.")
 
-    # ----- ALWAYS SHOW THE DATA EDITOR (even when df is empty) -----
+    # Data editor (always shown)
     edited = st.data_editor(
         df[list(POSITION_COLS.keys())],
         column_config=POSITION_COLS,
@@ -108,26 +99,22 @@ def positions_editor(tab_name: str, label: str):
     if st.button("Save changes", key=f"save_{tab_name}"):
         clean = edited.dropna(subset=["ticker"]).copy()
         clean["ticker"] = clean["ticker"].astype(str).str.strip()
-        # Convert datetime columns to strings before saving
-        for col in clean.select_dtypes(include=['datetime64', 'datetime']).columns:
-            clean[col] = clean[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
+        # No explicit date conversion – write_df handles it
         sheets_db.write_df(tab_name, clean)
         sheets_db.clear_caches()
         st.success("Saved.")
         st.rerun()
 
-    # ----- Rebalance button (only if there are positions) -----
+    # Rebalance button (only if positions exist)
     if not df.empty:
         st.divider()
         st.subheader("⚖️ Rebalance (save live performance to backtest)")
         st.caption(
             "Clicking this will save the current live tracking performance (from the "
             "last backtest date to today) into the backtest history. This freezes the "
-            "current performance and resets the live tracking start date to today. "
-            "Your current positions will remain unchanged."
+            "current performance and resets the live tracking start date to today."
         )
         if st.button(f"Rebalance {label}", key=f"rebalance_{tab_name}"):
-            # Load holdings
             holdings = []
             for _, row in df.iterrows():
                 try:
@@ -141,14 +128,12 @@ def positions_editor(tab_name: str, label: str):
                     continue
 
             if not holdings:
-                st.warning("No valid positions to rebalance. Add positions first.")
+                st.warning("No valid positions to rebalance.")
             else:
-                # Fetch price data
                 price_data = {}
                 for h in holdings:
                     price_data[h["ticker"]] = data_fetch.get_price_series(h["ticker"], h["asset_type"])
 
-                # Get backtest and compute live
                 backtest_index_values = load_backtest(label)
                 rebalance_freq = sheets_db.get_rebalance_frequency(label)
                 live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
@@ -158,12 +143,10 @@ def positions_editor(tab_name: str, label: str):
                     rebalance_frequency=rebalance_freq,
                     live_start_date=live_start_date,
                 )
-                # Combined index
                 combined = returns.chain_link_backtest(backtest_index_values, live_index)
                 if combined.empty:
-                    st.warning("Could not compute combined index. Check your data.")
+                    st.warning("Could not compute combined index.")
                 else:
-                    # Convert to DataFrame for saving
                     rebalance_df = combined.reset_index()
                     rebalance_df.columns = ["date", "index_value"]
                     rebalance_df["portfolio"] = label
@@ -171,8 +154,6 @@ def positions_editor(tab_name: str, label: str):
                     rebalance_df["index_value"] = rebalance_df["index_value"].apply(
                         lambda x: f"{x:.8f}" if pd.notnull(x) else ""
                     )
-
-                    # Overwrite backtest for this portfolio
                     existing = sheets_db.read_df("backtest_history")
                     if not existing.empty:
                         existing = existing[existing["portfolio"] != label]
@@ -227,6 +208,7 @@ elif section == "Watchlist ETFs":
         st.rerun()
 
 elif section == "Backtest history upload":
+    # (unchanged, uses Russian labels)
     st.subheader("Upload historical backtest returns")
     st.caption("Upload an Excel file with columns: Date, Portfolio (exactly 'Возможности Китая' or 'Возможности Китая. Специальная 2'), Index Value (starting at 100).")
 
@@ -299,6 +281,7 @@ elif section == "Backtest history upload":
     st.dataframe(sheets_db.read_df("backtest_history"), use_container_width=True)
 
 elif section == "Dividend log":
+    # (unchanged)
     st.subheader("Dividend log")
     st.write(
         "Dividends are auto-detected for stocks/ETFs held in your two portfolios "
