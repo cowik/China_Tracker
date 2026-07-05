@@ -46,37 +46,16 @@ def load_backtest(portfolio_label: str) -> pd.Series:
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 
-@st.cache_data(ttl=3600, show_spinner=False)   # 1 hour TTL for portfolio index
+@st.cache_data(ttl=3600, show_spinner=False)   # 1 hour cache
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
-    # Step 1: fetch price data with normal cache (force_refresh=False)
     price_data = {}
     for h in holdings:
+        # Force refresh – gets latest data and updates the cache
         price_data[h["ticker"]] = data_fetch.get_price_series(
             h["ticker"], h["asset_type"],
             start_date=h["inception_date"].strftime("%Y-%m-%d"),
-            force_refresh=False   # use cache first
+            force_refresh=True
         )
-
-    # Step 2: check if any series ends before the last trading day
-    last_trading_day = data_fetch._get_last_trading_day()
-    needs_refresh = False
-    for ticker, series in price_data.items():
-        if not series.empty:
-            last_date = series.index.max().strftime("%Y-%m-%d")
-            if last_date < last_trading_day:
-                needs_refresh = True
-                break
-
-    # Step 3: if needed, re-fetch with force_refresh=True only for missing tickers
-    if needs_refresh:
-        st.info(f"📡 Refreshing latest price data for {portfolio_label}...")
-        for h in holdings:
-            # Re‑fetch with force_refresh=True to get latest data
-            price_data[h["ticker"]] = data_fetch.get_price_series(
-                h["ticker"], h["asset_type"],
-                start_date=h["inception_date"].strftime("%Y-%m-%d"),
-                force_refresh=True
-            )
 
     backtest_index_values = load_backtest(portfolio_label)
     rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
