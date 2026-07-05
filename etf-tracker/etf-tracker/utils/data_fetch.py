@@ -1,5 +1,8 @@
 """
-Data fetching with persistent cache + optional force refresh.
+Data fetching with persistent Google Sheets cache.
+- Stocks: BaoStock (adjustflag='2') -> BaoStock unadjusted (adjustflag='3') -> yfinance.
+- ETFs: yfinance only.
+- Cached in `price_cache` sheet; `force_refresh=True` bypasses cache for live data.
 """
 from __future__ import annotations
 import time
@@ -235,12 +238,12 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
 def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "1990-01-01", force_refresh: bool = False) -> pd.Series:
     """
     Date-indexed close price series.
-    If force_refresh=True, bypass cache and fetch directly from source.
+    If force_refresh=True, ignore cache and fetch fresh data up to last trading day.
     """
     ticker = _clean_ticker(ticker)
 
     if force_refresh:
-        # Direct fetch without cache
+        # Fetch directly without cache
         last_trading = _get_last_trading_day()
         df = _fetch_missing_data(ticker, asset_type, start_date, last_trading)
         if df.empty:
