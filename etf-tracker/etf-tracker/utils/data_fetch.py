@@ -1,26 +1,11 @@
 """
-Data fetching:
-- ETFs: efinance primary, yfinance fallback, BaoStock last
-- Stocks: BaoStock primary, efinance fallback, yfinance last
+Data fetching: BaoStock primary (A-share dedicated), then yfinance fallback.
 """
 from __future__ import annotations
-import os
-import tempfile
+import pandas as pd
+import streamlit as st
 import time
 import random
-import streamlit as st
-
-# --- Fix efinance permission error: set cache dir to a writable temp location ---
-_cache_dir = tempfile.mkdtemp(prefix="efinance_")
-os.environ["EFINANCE_HOME"] = _cache_dir
-
-# Now import efinance (will use the above cache dir)
-try:
-    import efinance as ef
-    EFINANCE_AVAILABLE = True
-except ImportError:
-    EFINANCE_AVAILABLE = False
-    st.warning("efinance not installed – falling back to other sources.")
 
 
 def _clean_ticker(ticker: str) -> str:
@@ -37,6 +22,7 @@ def _to_baostock_ticker(ticker: str) -> str:
     ticker = _clean_ticker(ticker)
     if not ticker:
         return ticker
+    # Shanghai: 5 or 6开头; Shenzhen: 0, 2, 3开头 (and some ETFs start with 1)
     if ticker[0] in ('5', '6'):
         return f"sh.{ticker}"
     else:
@@ -54,31 +40,8 @@ def _to_yfinance_ticker(ticker: str) -> str:
         return f"{ticker}.SZ"
 
 
-def _retry_download_efinance(ticker: str, start_date: str, end_date: str, retries=3):
-    """Fetch daily data using efinance (Eastmoney)."""
-    if not EFINANCE_AVAILABLE:
-        return pd.DataFrame()
-    for attempt in range(retries):
-        try:
-            df = ef.stock.get_quote_history(
-                code=ticker,
-                start=start_date,
-                end=end_date
-            )
-            if df is not None and not df.empty:
-                df = df.rename(columns={"日期": "date", "收盘": "close"})
-                df['date'] = pd.to_datetime(df['date'])
-                df['close'] = pd.to_numeric(df['close'], errors='coerce')
-                df = df.dropna(subset=['close'])
-                return df[['date', 'close']]
-        except Exception as e:
-            st.warning(f"efinance attempt {attempt+1} failed: {e}")
-            time.sleep(2 * (1 + random.random()))
-    return pd.DataFrame()
-
-
 def _retry_download_baostock(ticker: str, start_date: str, end_date: str, retries=3):
-    """Fetch daily data using BaoStock."""
+    """Fetch daily data using BaoStock with retries."""
     import baostock as bs
     for attempt in range(retries):
         try:
@@ -113,6 +76,7 @@ def _retry_download_baostock(ticker: str, start_date: str, end_date: str, retrie
             df = pd.DataFrame(data_list, columns=rs.fields)
             df['date'] = pd.to_datetime(df['date'])
             df['close'] = pd.to_numeric(df['close'], errors='coerce')
+            # Drop any rows with missing close price
             df = df.dropna(subset=['close'])
             return df[['date', 'close']]
 
@@ -143,84 +107,41 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3):
     return pd.DataFrame()
 
 
-def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "1990-01-01") -> pd.Series:
-    """
-    Returns date-indexed close price series.
-    asset_type is used to prioritize data source:
-    - 'stock': try BaoStock first, then efinance, then yfinance
-    - 'etf': try efinance first, then yfinance, then BaoStock
-    """
-    ticker = _clean_ticker(ticker)
-    df = pd.DataFrame()
-    
-    if asset_type == 'stock':
-        # Try BaoStock first for stocks
-        bs_ticker = _to_baostock_ticker(ticker)
-        df = _retry_download_baostock(bs_ticker, start_date, "2050-01-01")
-        if not df.empty:
-            st.info(f"✅ {ticker} (stock) loaded via BaoStock")
-            return df.set_index("date")["close"].sort_index()
-        
-        # Fallback to efinance
-        df = _retry_download_efinance(ticker, start_date, "2050-01-01")
-        if not df.empty:
-            st.info(f"✅ {ticker} (stock) loaded via efinance")
-            return df.set_index("date")["close"].sort_index()
-        
-        # Finally yfinance
-        yf_ticker = _to_yfinance_ticker(ticker)
-        try:
-            df = _retry_download_yfinance(yf_ticker, start_date, "2050-01-01")
-            if not df.empty:
-                st.info(f"✅ {ticker} (stock) loaded via yfinance")
-                return df.set_index("date")["close"].sort_index()
-        except Exception:
-            pass
-
-    elif asset_type == 'etf':
-        # Try efinance first for ETFs
-        df = _retry_download_efinance(ticker, start_date, "2050-01-01")
-        if not df.empty:
-            st.info(f"✅ {ticker} (ETF) loaded via efinance")
-            return df.set_index("date")["close"].sort_index()
-        
-        # Fallback to yfinance
-        yf_ticker = _to_yfinance_ticker(ticker)
-        try:
-            df = _retry_download_yfinance(yf_ticker, start_date, "2050-01-01")
-            if not df.empty:
-                st.info(f"✅ {ticker} (ETF) loaded via yfinance")
-                return df.set_index("date")["close"].sort_index()
-        except Exception:
-            pass
-        
-        # Last try BaoStock
-        bs_ticker = _to_baostock_ticker(ticker)
-        df = _retry_download_baostock(bs_ticker, start_date, "2050-01-01")
-        if not df.empty:
-            st.info(f"✅ {ticker} (ETF) loaded via BaoStock")
-            return df.set_index("date")["close"].sort_index()
-
-    # If all failed
-    st.warning(f"❌ No data for {ticker} (asset_type={asset_type})")
-    return pd.Series(dtype=float)
-
-
-# For backward compatibility with existing code
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_stock_hist(ticker: str, start_date: str = "1990-01-01", end_date: str = "2050-01-01") -> pd.DataFrame:
-    df = get_price_series(ticker, asset_type="stock", start_date=start_date)
-    if df.empty:
-        return pd.DataFrame()
-    return df.reset_index().rename(columns={"index": "date"})
+    """Fetch daily OHLCV: try BaoStock first, then yfinance."""
+    # 1. BaoStock
+    bs_ticker = _to_baostock_ticker(ticker)
+    df = _retry_download_baostock(bs_ticker, start_date, end_date)
+    if not df.empty:
+        st.info(f"✅ Data for {ticker} loaded via BaoStock")  # debug
+        return df
+
+    # 2. Fallback to yfinance
+    yf_ticker = _to_yfinance_ticker(ticker)
+    try:
+        df = _retry_download_yfinance(yf_ticker, start_date, end_date)
+        if not df.empty:
+            st.info(f"✅ Data for {ticker} loaded via yfinance (fallback)")
+            return df
+    except Exception as e:
+        st.warning(f"yfinance fallback failed for {ticker}: {e}")
+
+    st.warning(f"❌ No data found for {ticker} (tried BaoStock and yfinance)")
+    return pd.DataFrame()
 
 
 def get_etf_hist(ticker: str, start_date: str = "1990-01-01", end_date: str = "2050-01-01") -> pd.DataFrame:
-    df = get_price_series(ticker, asset_type="etf", start_date=start_date)
+    return get_stock_hist(ticker, start_date, end_date)
+
+
+def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "1990-01-01") -> pd.Series:
+    df = get_stock_hist(ticker, start_date=start_date)
     if df.empty:
-        return pd.DataFrame()
-    return df.reset_index().rename(columns={"index": "date"})
+        return pd.Series(dtype=float)
+    return df.set_index("date")["close"].sort_index()
 
 
+# Dividends placeholder – BaoStock also provides dividend data if needed
 def get_dividends(ticker: str, asset_type: str) -> pd.DataFrame:
-    # Placeholder – dividends can be fetched if needed
     return pd.DataFrame()
