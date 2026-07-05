@@ -58,7 +58,7 @@ def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjust
                 start_date=start_date,
                 end_date=end_date,
                 frequency="d",
-                adjustflag=adjustflag  # '2' = forward-adjusted (total return)
+                adjustflag=adjustflag
             )
             if rs.error_code != '0':
                 bs.logout()
