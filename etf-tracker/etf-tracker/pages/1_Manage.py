@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import date
+import os
 
 from utils import sheets_db, data_fetch, auth
 
@@ -35,7 +36,6 @@ REBALANCE_OPTIONS = {
 
 def positions_editor(tab_name: str, label: str):
     st.subheader(f"{label} positions")
-    df = sheets_db.read_df(tab_name)
 
     current_freq = sheets_db.get_rebalance_frequency(label)
     chosen_freq = st.selectbox(
@@ -53,43 +53,43 @@ def positions_editor(tab_name: str, label: str):
         st.success(f"Rebalancing set to: {REBALANCE_OPTIONS[chosen_freq]}")
         st.rerun()
 
-df = sheets_db.read_df(tab_name)
-for col in POSITION_COLS:
-    if col not in df.columns:
-        df[col] = None
-if not df.empty:
-    # --- FIX: ensure ticker is string before data_editor ---
-    if "ticker" in df.columns:
-        df["ticker"] = df["ticker"].astype(str).str.strip()
-    df["purchase_date"] = pd.to_datetime(df["purchase_date"], errors="coerce").dt.date
-    df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
-    df["cost_basis"] = pd.to_numeric(df["cost_basis"], errors="coerce")
+    df = sheets_db.read_df(tab_name)
+    for col in POSITION_COLS:
+        if col not in df.columns:
+            df[col] = None
+    if not df.empty:
+        # Ensure ticker is string before data_editor
+        if "ticker" in df.columns:
+            df["ticker"] = df["ticker"].astype(str).str.strip()
+        df["purchase_date"] = pd.to_datetime(df["purchase_date"], errors="coerce").dt.date
+        df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
+        df["cost_basis"] = pd.to_numeric(df["cost_basis"], errors="coerce")
 
-    total_weight = df["weight"].sum() if not df.empty else 0
-    if df.empty:
-        st.caption("No positions yet - add rows below.")
-    elif abs(total_weight - 100) > 0.5:
-        st.warning(f"Weights currently sum to {total_weight:.1f}%, not 100%. That's OK while you're editing, but double-check before relying on the numbers.")
-    else:
-        st.caption(f"Weights sum to {total_weight:.1f}%. ✅")
+        total_weight = df["weight"].sum()
+        if df.empty:
+            st.caption("No positions yet - add rows below.")
+        elif abs(total_weight - 100) > 0.5:
+            st.warning(f"Weights currently sum to {total_weight:.1f}%, not 100%. That's OK while you're editing, but double-check before relying on the numbers.")
+        else:
+            st.caption(f"Weights sum to {total_weight:.1f}%. ✅")
 
-    edited = st.data_editor(
-        df[list(POSITION_COLS.keys())],
-        column_config=POSITION_COLS,
-        num_rows="dynamic",
-        use_container_width=True,
-        key=f"editor_{tab_name}",
-    )
-    if st.button("Save changes", key=f"save_{tab_name}"):
-        clean = edited.dropna(subset=["ticker"]).copy()
-        clean["ticker"] = clean["ticker"].astype(str).str.strip()
-        # --- FIX: convert all datetime/date columns to strings ---
-        for col in clean.select_dtypes(include=['datetime64', 'datetime']).columns:
-            clean[col] = clean[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
-        sheets_db.write_df(tab_name, clean)
-        sheets_db.clear_caches()
-        st.success("Saved.")
-        st.rerun()
+        edited = st.data_editor(
+            df[list(POSITION_COLS.keys())],
+            column_config=POSITION_COLS,
+            num_rows="dynamic",
+            use_container_width=True,
+            key=f"editor_{tab_name}",
+        )
+        if st.button("Save changes", key=f"save_{tab_name}"):
+            clean = edited.dropna(subset=["ticker"]).copy()
+            clean["ticker"] = clean["ticker"].astype(str).str.strip()
+            # Convert datetime columns to strings before saving
+            for col in clean.select_dtypes(include=['datetime64', 'datetime']).columns:
+                clean[col] = clean[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
+            sheets_db.write_df(tab_name, clean)
+            sheets_db.clear_caches()
+            st.success("Saved.")
+            st.rerun()
 
 
 if section == "Portfolio 1":
@@ -111,7 +111,7 @@ elif section == "Watchlist ETFs":
             df[col] = None
     if not df.empty:
         df["added_date"] = pd.to_datetime(df["added_date"], errors="coerce").dt.date
-        # --- FIX: ensure ticker is string before data_editor ---
+        # Ensure ticker is string before data_editor
         if "ticker" in df.columns:
             df["ticker"] = df["ticker"].astype(str).str.strip()
 
@@ -124,8 +124,8 @@ elif section == "Watchlist ETFs":
         clean["ticker"] = clean["ticker"].astype(str).str.strip()
         # Fill missing added_date with today's date
         clean["added_date"] = clean["added_date"].fillna(pd.Timestamp.today().date())
-        # Convert all date columns to strings (fixes JSON serialization)
-        for col in clean.select_dtypes(include=['datetime64', 'datetime', 'date']).columns:
+        # Convert datetime columns to strings before saving
+        for col in clean.select_dtypes(include=['datetime64', 'datetime']).columns:
             clean[col] = clean[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
         sheets_db.write_df("watchlist_etfs", clean)
         sheets_db.clear_caches()
@@ -135,9 +135,7 @@ elif section == "Watchlist ETFs":
 elif section == "Backtest history upload":
     st.subheader("Upload historical backtest returns")
     
-    # --- Ensure the template file exists ---
-    import os
-    import pandas as pd
+    # Ensure the template file exists
     os.makedirs("data", exist_ok=True)
     template_path = "data/backtest_template.xlsx"
     if not os.path.exists(template_path):
@@ -155,14 +153,14 @@ elif section == "Backtest history upload":
             ])
             instructions.to_excel(writer, sheet_name="Instructions", index=False, header=False)
 
-    # Now offer the download
+    # Offer the download
     with open(template_path, "rb") as f:
         st.download_button(
             "Download blank template", f, file_name="backtest_template.xlsx",
             help="Fill this in with your own historical returns, then upload it below.",
         )
     
-    # ----- The rest of the original upload logic (unchanged) -----
+    # Upload logic
     uploaded = st.file_uploader("Upload filled-in template", type=["xlsx"])
     if uploaded is not None:
         try:
