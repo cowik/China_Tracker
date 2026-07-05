@@ -70,11 +70,20 @@ with st.spinner("Loading your data..."):
     p2_holdings = load_holdings("portfolio2_positions")
     watchlist_df = load_watchlist()
 
+    # Check for backtest data to decide whether to include portfolios even without holdings
+    backtest_df = sheets_db.read_df("backtest_history")
+
     series_options = {}
-    if p1_holdings:
+
+    # Portfolio 1
+    if p1_holdings or not backtest_df[backtest_df["portfolio"] == "Portfolio 1"].empty:
         series_options["Portfolio 1"] = compute_portfolio_index("portfolio1_positions", "Portfolio 1", p1_holdings)
-    if p2_holdings:
+
+    # Portfolio 2
+    if p2_holdings or not backtest_df[backtest_df["portfolio"] == "Portfolio 2"].empty:
         series_options["Portfolio 2"] = compute_portfolio_index("portfolio2_positions", "Portfolio 2", p2_holdings)
+
+    # Watchlist
     for _, row in watchlist_df.iterrows():
         ticker = str(row["ticker"]).strip()
         name = str(row.get("name", "")).strip() or ticker
