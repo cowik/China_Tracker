@@ -70,43 +70,54 @@ def positions_editor(tab_name: str, label: str):
         st.success(f"Rebalancing set to: {REBALANCE_OPTIONS[chosen_freq]}")
         st.rerun()
 
+    # Read and prepare data
     df = sheets_db.read_df(tab_name)
     for col in POSITION_COLS:
         if col not in df.columns:
             df[col] = None
+
+    # Ensure ticker is string
+    if not df.empty and "ticker" in df.columns:
+        df["ticker"] = df["ticker"].astype(str).str.strip()
+
+    # Convert types for display
     if not df.empty:
-        if "ticker" in df.columns:
-            df["ticker"] = df["ticker"].astype(str).str.strip()
         df["purchase_date"] = pd.to_datetime(df["purchase_date"], errors="coerce").dt.date
         df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
         df["cost_basis"] = pd.to_numeric(df["cost_basis"], errors="coerce")
 
+    # Show weight sum warning only if there are positions
+    if not df.empty:
         total_weight = df["weight"].sum()
-        if df.empty:
-            st.caption("No positions yet - add rows below.")
-        elif abs(total_weight - 100) > 0.5:
+        if abs(total_weight - 100) > 0.5:
             st.warning(f"Weights sum to {total_weight:.1f}% – adjust to 100% for accurate tracking.")
         else:
             st.caption(f"Weights sum to {total_weight:.1f}%. ✅")
+    else:
+        st.caption("No positions yet – add rows below using the editor.")
 
-        edited = st.data_editor(
-            df[list(POSITION_COLS.keys())],
-            column_config=POSITION_COLS,
-            num_rows="dynamic",
-            use_container_width=True,
-            key=f"editor_{tab_name}",
-        )
-        if st.button("Save changes", key=f"save_{tab_name}"):
-            clean = edited.dropna(subset=["ticker"]).copy()
-            clean["ticker"] = clean["ticker"].astype(str).str.strip()
-            for col in clean.select_dtypes(include=['datetime64', 'datetime']).columns:
-                clean[col] = clean[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
-            sheets_db.write_df(tab_name, clean)
-            sheets_db.clear_caches()
-            st.success("Saved.")
-            st.rerun()
+    # ----- ALWAYS SHOW THE DATA EDITOR (even when df is empty) -----
+    edited = st.data_editor(
+        df[list(POSITION_COLS.keys())],
+        column_config=POSITION_COLS,
+        num_rows="dynamic",
+        use_container_width=True,
+        key=f"editor_{tab_name}",
+    )
 
-        # ----- Rebalance button -----
+    if st.button("Save changes", key=f"save_{tab_name}"):
+        clean = edited.dropna(subset=["ticker"]).copy()
+        clean["ticker"] = clean["ticker"].astype(str).str.strip()
+        # Convert datetime columns to strings before saving
+        for col in clean.select_dtypes(include=['datetime64', 'datetime']).columns:
+            clean[col] = clean[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
+        sheets_db.write_df(tab_name, clean)
+        sheets_db.clear_caches()
+        st.success("Saved.")
+        st.rerun()
+
+    # ----- Rebalance button (only if there are positions) -----
+    if not df.empty:
         st.divider()
         st.subheader("⚖️ Rebalance (save live performance to backtest)")
         st.caption(
@@ -216,7 +227,6 @@ elif section == "Watchlist ETFs":
         st.rerun()
 
 elif section == "Backtest history upload":
-    # (unchanged – the upload logic remains as before, but we use the Russian labels)
     st.subheader("Upload historical backtest returns")
     st.caption("Upload an Excel file with columns: Date, Portfolio (exactly 'Возможности Китая' or 'Возможности Китая. Специальная 2'), Index Value (starting at 100).")
 
@@ -289,7 +299,6 @@ elif section == "Backtest history upload":
     st.dataframe(sheets_db.read_df("backtest_history"), use_container_width=True)
 
 elif section == "Dividend log":
-    # (unchanged)
     st.subheader("Dividend log")
     st.write(
         "Dividends are auto-detected for stocks/ETFs held in your two portfolios "
