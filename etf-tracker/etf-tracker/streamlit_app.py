@@ -40,7 +40,7 @@ def load_backtest(portfolio_label: str) -> pd.Series:
         return pd.Series(dtype=float)
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date")
-    # This converts strings to float
+    # Convert stored strings to float
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 
@@ -75,15 +75,14 @@ with st.spinner("Loading your data..."):
 
     series_options = {}
 
-    # Portfolio 1
+    # Include portfolio if it has holdings OR backtest data
     if p1_holdings or not backtest_df[backtest_df["portfolio"] == "Portfolio 1"].empty:
         series_options["Portfolio 1"] = compute_portfolio_index("portfolio1_positions", "Portfolio 1", p1_holdings)
 
-    # Portfolio 2
     if p2_holdings or not backtest_df[backtest_df["portfolio"] == "Portfolio 2"].empty:
         series_options["Portfolio 2"] = compute_portfolio_index("portfolio2_positions", "Portfolio 2", p2_holdings)
 
-    # Watchlist
+    # Watchlist ETFs
     for _, row in watchlist_df.iterrows():
         ticker = str(row["ticker"]).strip()
         name = str(row.get("name", "")).strip() or ticker
@@ -93,10 +92,7 @@ with st.spinner("Loading your data..."):
             series_options[label] = price / price.iloc[0]
 
 if not series_options:
-    st.info(
-        "No portfolios or watchlist ETFs set up yet. Go to the **Manage** page "
-        "(left sidebar) to add your positions and ETFs."
-    )
+    st.info("No portfolios or watchlist ETFs set up yet. Go to the **Manage** page to add them.")
     st.stop()
 
 # --- Chart ---
@@ -159,7 +155,6 @@ else:
 
 st.caption(
     "Positions and ETFs are managed on the **Manage** page. Dividends are "
-    "detected automatically and folded into total-return figures above via "
-    "dividend-adjusted price data - see the Manage page to review the "
-    "detected dividend log."
+    "detected automatically and folded into total-return figures via "
+    "dividend-adjusted price data."
 )
