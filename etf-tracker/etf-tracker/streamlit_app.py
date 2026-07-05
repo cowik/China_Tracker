@@ -61,11 +61,25 @@ def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[
     rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
     live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
 
+    # Compute live index
     live_index = returns.compute_live_index(
         holdings, price_data,
         rebalance_frequency=rebalance_freq,
         live_start_date=live_start_date,
     )
+
+    # ----- FALLBACK: if live_index is empty but holdings exist, compute from inception and slice -----
+    if live_index.empty and holdings:
+        st.warning(f"Live tracking for {portfolio_label} computed from inception (fallback).")
+        live_index = returns.compute_live_index(
+            holdings, price_data,
+            rebalance_frequency=rebalance_freq,
+            live_start_date=None,  # start from earliest inception
+        )
+        if not live_index.empty and live_start_date is not None:
+            # Keep only dates >= live_start_date (backtest end)
+            live_index = live_index[live_index.index >= live_start_date]
+
     return returns.chain_link_backtest(backtest_index_values, live_index)
 
 
@@ -117,7 +131,6 @@ if chart_series.empty:
     st.warning("No price data available yet for this selection.")
 else:
     # ---- Period selector (re-base chart) ----
-    # Use exact day counts from returns.PERIOD_DEFS for consistency with table
     period_options = ["1D", "1W", "1M", "3M", "6M", "1Y", "YTD", "3Y", "5Y", "Max"]
     period_days = {
         "1D": 1,
@@ -131,7 +144,6 @@ else:
         "5Y": 1825,
         "Max": None,
     }
-    # Default to 1Y for consistency with table
     default_index = period_options.index("1Y")
     selected_period = st.selectbox("Chart period", period_options, index=default_index)
 
