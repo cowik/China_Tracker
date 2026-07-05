@@ -5,3 +5,4 @@ plotly>=5.20
 gspread>=6.1
 google-auth>=2.29
 openpyxl>=3.1
+yfinance>=0.2.28
