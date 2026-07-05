@@ -14,9 +14,25 @@ import akshare as ak
 import pandas as pd
 import streamlit as st
 import time
+import random
 
 
-def _retry(fn, *args, retries=3, delay=1.5, **kwargs):
+def _clean_ticker(ticker: str) -> str:
+    """
+    Remove common suffixes like .SH, .SZ, .SS, .SZ and whitespace.
+    akshare expects plain 6-digit codes.
+    """
+    ticker = str(ticker).strip()
+    # Remove common suffixes
+    for suffix in ['.SH', '.SZ', '.SS', '.SZ']:
+        if ticker.upper().endswith(suffix):
+            ticker = ticker[:-len(suffix)]
+    # Remove any remaining dots
+    ticker = ticker.replace('.', '')
+    return ticker
+
+
+def _retry(fn, *args, retries=5, delay=2.0, **kwargs):
     last_err = None
     for attempt in range(retries):
         try:
@@ -24,7 +40,9 @@ def _retry(fn, *args, retries=3, delay=1.5, **kwargs):
         except Exception as e:
             last_err = e
             if attempt < retries - 1:
-                time.sleep(delay)
+                # Add jitter to avoid hitting the server at exactly the same time
+                sleep_time = delay * (1 + random.random() * 0.5)
+                time.sleep(sleep_time)
     raise last_err
 
 
@@ -37,6 +55,7 @@ def get_stock_hist(ticker: str, start_date: str = "19900101", end_date: str = "2
     Empty DataFrame on failure (never raises), so callers can show a friendly
     'no data for X' message instead of crashing.
     """
+    ticker = _clean_ticker(ticker)
     try:
         df = _retry(
             ak.stock_zh_a_hist,
@@ -56,6 +75,7 @@ def get_stock_hist(ticker: str, start_date: str = "19900101", end_date: str = "2
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_etf_hist(ticker: str, start_date: str = "19900101", end_date: str = "20500101") -> pd.DataFrame:
     """China-listed ETF daily history, dividend-adjusted (hfq)."""
+    ticker = _clean_ticker(ticker)
     try:
         df = _retry(
             ak.fund_etf_hist_em,
@@ -88,6 +108,7 @@ def get_stock_dividends(ticker: str) -> pd.DataFrame:
     Returns columns: ex_date, pay_date, amount_per_share (in yuan, per 1 share).
     Empty DataFrame on failure or if the stock has never paid a dividend.
     """
+    ticker = _clean_ticker(ticker)
     try:
         df = _retry(ak.stock_fhps_detail_em, symbol=ticker)
         if df is None or df.empty:
@@ -121,6 +142,7 @@ def get_etf_dividends(ticker: str) -> pd.DataFrame:
     payout amounts. ex_date and pay_date are the same single date here since
     the source doesn't separate them - noted as a known simplification.
     """
+    ticker = _clean_ticker(ticker)
     try:
         market_prefix = "sh" if ticker.startswith(("5", "6")) else "sz"
         df = _retry(ak.fund_etf_dividend_sina, symbol=f"{market_prefix}{ticker}")
