@@ -80,7 +80,7 @@ def positions_editor(tab_name: str, label: str):
         clean = edited.dropna(subset=["ticker"]).copy()
         clean["ticker"] = clean["ticker"].astype(str).str.strip()
         # --- FIX: convert all datetime/date columns to strings ---
-        for col in clean.select_dtypes(include=['datetime64', 'datetime', 'date']).columns:
+        for col in clean.select_dtypes(include=['datetime64', 'datetime']).columns:
             clean[col] = clean[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
         sheets_db.write_df(tab_name, clean)
         sheets_db.clear_caches()
