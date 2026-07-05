@@ -130,12 +130,7 @@ def positions_editor(tab_name: str, label: str):
             else:
                 price_data = {}
                 for h in holdings:
-                    # ----- FIX: pass inception_date to fetch only needed history -----
-                    price_data[h["ticker"]] = data_fetch.get_price_series(
-                        h["ticker"],
-                        h["asset_type"],
-                        start_date=h["inception_date"].strftime("%Y-%m-%d")
-                    )
+                    price_data[h["ticker"]] = data_fetch.get_price_series(h["ticker"], h["asset_type"])
 
                 backtest_index_values = load_backtest(label)
                 rebalance_freq = sheets_db.get_rebalance_frequency(label)
