@@ -141,7 +141,7 @@ def _fetch_missing_data(ticker: str, asset_type: str, start_date: str, end_date:
 
 
 # --------------------------------------------------------- sheet-backed cache --
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=32400, show_spinner=False)
 def _load_all_price_cache() -> pd.DataFrame:
     """Read the whole price_cache tab once per hour. Cheap in-memory reuse
     across every ticker lookup until it expires or is explicitly cleared."""
@@ -244,7 +244,7 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
 
 
 # ------------------------------------------------------------------ public --
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=14400, show_spinner=False)
 def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "1990-01-01") -> pd.Series:
     """
     Date-indexed close price series, backed by the price_cache sheet.
