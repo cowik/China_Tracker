@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import date, timedelta
+from datetime import date
 
 from utils import sheets_db, data_fetch, returns
 
@@ -46,35 +46,16 @@ def load_backtest(portfolio_label: str) -> pd.Series:
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
-    # Step 1: fetch price data with standard cache
     price_data = {}
-    last_trading_day = data_fetch._get_last_trading_day()
     for h in holdings:
+        # Fetch from inception, but force refresh for live period
         price_data[h["ticker"]] = data_fetch.get_price_series(
             h["ticker"], h["asset_type"],
-            start_date=h["inception_date"].strftime("%Y-%m-%d")
+            start_date=h["inception_date"].strftime("%Y-%m-%d"),
+            force_refresh=True  # <-- NEW: bypass cache to get latest data
         )
-
-    # Step 2: check if any series ends before the last trading day – if so, force refresh
-    force_refresh_needed = False
-    for ticker, series in price_data.items():
-        if not series.empty:
-            last_date = series.index.max().strftime("%Y-%m-%d")
-            if last_date < last_trading_day:
-                force_refresh_needed = True
-                break
-
-    if force_refresh_needed:
-        st.info("📡 Refreshing latest price data for live period...")
-        for h in holdings:
-            # Fetch with force_refresh=True to get latest data
-            price_data[h["ticker"]] = data_fetch.get_price_series(
-                h["ticker"], h["asset_type"],
-                start_date=h["inception_date"].strftime("%Y-%m-%d"),
-                force_refresh=True
-            )
 
     backtest_index_values = load_backtest(portfolio_label)
     rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
