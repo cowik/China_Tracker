@@ -1,27 +1,13 @@
 """
-Data fetching with fallback chain:
-- ETF: efinance -> yfinance -> BaoStock
-- Stock: BaoStock -> efinance -> yfinance
+Data fetching:
+- Stocks: BaoStock primary, akshare secondary, yfinance fallback
+- ETFs: akshare primary, yfinance secondary, BaoStock fallback
 """
 from __future__ import annotations
-import os
-import tempfile
 import time
 import random
 import pandas as pd
 import streamlit as st
-
-# --- Fix efinance permission error by setting cache dir to a writable temp location ---
-_cache_dir = tempfile.mkdtemp(prefix="efinance_")
-os.environ["EFINANCE_HOME"] = _cache_dir
-
-# Now import efinance (will use the above cache dir)
-try:
-    import efinance as ef
-    EFINANCE_AVAILABLE = True
-except ImportError:
-    EFINANCE_AVAILABLE = False
-    st.warning("efinance not installed – falling back to other sources.")
 
 
 def _clean_ticker(ticker: str) -> str:
@@ -55,26 +41,54 @@ def _to_yfinance_ticker(ticker: str) -> str:
         return f"{ticker}.SZ"
 
 
-def _retry_download_efinance(ticker: str, start_date: str, end_date: str, retries=3):
-    """Fetch daily data using efinance (Eastmoney)."""
-    if not EFINANCE_AVAILABLE:
-        return pd.DataFrame()
+def _retry_download_akshare(ticker: str, start_date: str, end_date: str, retries=4, delay=3):
+    """Fetch daily data using akshare (Eastmoney) – best for ETFs."""
+    import akshare as ak
     for attempt in range(retries):
         try:
-            df = ef.stock.get_quote_history(
-                code=ticker,
-                start=start_date,
-                end=end_date
+            # Try ETF function first
+            df = ak.fund_etf_hist_em(
+                symbol=ticker,
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+                adjust="hfq"  # dividend-adjusted
             )
-            if df is not None and not df.empty:
-                df = df.rename(columns={"日期": "date", "收盘": "close"})
-                df['date'] = pd.to_datetime(df['date'])
-                df['close'] = pd.to_numeric(df['close'], errors='coerce')
-                df = df.dropna(subset=['close'])
-                return df[['date', 'close']]
+            if df is None or df.empty:
+                return pd.DataFrame()
+            df = df.rename(columns={"日期": "date", "收盘": "close"})
+            df['date'] = pd.to_datetime(df['date'])
+            df['close'] = pd.to_numeric(df['close'], errors='coerce')
+            df = df.dropna(subset=['close'])
+            return df[['date', 'close']]
         except Exception as e:
-            st.warning(f"efinance attempt {attempt+1} failed: {e}")
-            time.sleep(2 * (1 + random.random()))
+            st.warning(f"akshare ETF attempt {attempt+1} failed: {e}")
+            time.sleep(delay * (1 + random.random()))
+    return pd.DataFrame()
+
+
+def _retry_download_akshare_stock(ticker: str, start_date: str, end_date: str, retries=4, delay=3):
+    """Fetch stock data via akshare (fallback for stocks)."""
+    import akshare as ak
+    for attempt in range(retries):
+        try:
+            df = ak.stock_zh_a_hist(
+                symbol=ticker,
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+                adjust="hfq"
+            )
+            if df is None or df.empty:
+                return pd.DataFrame()
+            df = df.rename(columns={"日期": "date", "收盘": "close"})
+            df['date'] = pd.to_datetime(df['date'])
+            df['close'] = pd.to_numeric(df['close'], errors='coerce')
+            df = df.dropna(subset=['close'])
+            return df[['date', 'close']]
+        except Exception as e:
+            st.warning(f"akshare stock attempt {attempt+1} failed: {e}")
+            time.sleep(delay * (1 + random.random()))
     return pd.DataFrame()
 
 
@@ -95,7 +109,7 @@ def _retry_download_baostock(ticker: str, start_date: str, end_date: str, retrie
                 start_date=start_date,
                 end_date=end_date,
                 frequency="d",
-                adjustflag="3"  # 3 = no adjustment
+                adjustflag="3"
             )
             if rs.error_code != '0':
                 st.warning(f"BaoStock query failed: {rs.error_msg}")
@@ -148,17 +162,17 @@ def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "
     """
     Returns date-indexed close price series.
     asset_type determines priority:
-    - 'etf': efinance -> yfinance -> BaoStock
-    - 'stock': BaoStock -> efinance -> yfinance
+    - 'etf': akshare (ETF) -> yfinance -> BaoStock
+    - 'stock': BaoStock -> akshare (stock) -> yfinance
     """
     ticker = _clean_ticker(ticker)
     df = pd.DataFrame()
 
     if asset_type == 'etf':
-        # 1. efinance
-        df = _retry_download_efinance(ticker, start_date, "2050-01-01")
+        # 1. akshare ETF function (most reliable for ETFs)
+        df = _retry_download_akshare(ticker, start_date, "2050-01-01")
         if not df.empty:
-            st.info(f"✅ {ticker} (ETF) loaded via efinance")
+            st.info(f"✅ {ticker} (ETF) loaded via akshare")
             return df.set_index("date")["close"].sort_index()
 
         # 2. yfinance
@@ -186,10 +200,10 @@ def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "
             st.info(f"✅ {ticker} (stock) loaded via BaoStock")
             return df.set_index("date")["close"].sort_index()
 
-        # 2. efinance
-        df = _retry_download_efinance(ticker, start_date, "2050-01-01")
+        # 2. akshare stock function
+        df = _retry_download_akshare_stock(ticker, start_date, "2050-01-01")
         if not df.empty:
-            st.info(f"✅ {ticker} (stock) loaded via efinance")
+            st.info(f"✅ {ticker} (stock) loaded via akshare")
             return df.set_index("date")["close"].sort_index()
 
         # 3. yfinance
@@ -202,7 +216,6 @@ def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "
         except Exception:
             pass
 
-    # If all failed
     st.warning(f"❌ No data for {ticker} (asset_type={asset_type})")
     return pd.Series(dtype=float)
 
