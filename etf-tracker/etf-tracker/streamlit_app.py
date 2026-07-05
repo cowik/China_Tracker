@@ -116,6 +116,7 @@ else:
             dict(count=6, label="6M", step="month", stepmode="backward"),
             dict(step="year", stepmode="todate", label="YTD"),
             dict(count=1, label="1Y", step="year", stepmode="backward"),
+            dict(count=3, label="3Y", step="year", stepmode="backward"),
             dict(count=5, label="5Y", step="year", stepmode="backward"),
             dict(step="all", label="Max"),
         ]),
