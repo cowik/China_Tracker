@@ -79,6 +79,9 @@ def positions_editor(tab_name: str, label: str):
     if st.button("Save changes", key=f"save_{tab_name}"):
         clean = edited.dropna(subset=["ticker"]).copy()
         clean["ticker"] = clean["ticker"].astype(str).str.strip()
+        # --- FIX: convert all datetime/date columns to strings ---
+        for col in clean.select_dtypes(include=['datetime64', 'datetime', 'date']).columns:
+            clean[col] = clean[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
         sheets_db.write_df(tab_name, clean)
         sheets_db.clear_caches()
         st.success("Saved.")
@@ -104,6 +107,9 @@ elif section == "Watchlist ETFs":
             df[col] = None
     if not df.empty:
         df["added_date"] = pd.to_datetime(df["added_date"], errors="coerce").dt.date
+        # --- FIX: ensure ticker is string before data_editor ---
+        if "ticker" in df.columns:
+            df["ticker"] = df["ticker"].astype(str).str.strip()
 
     edited = st.data_editor(
         df[list(cols.keys())], column_config=cols, num_rows="dynamic",
@@ -112,7 +118,11 @@ elif section == "Watchlist ETFs":
     if st.button("Save changes", key="save_watchlist"):
         clean = edited.dropna(subset=["ticker"]).copy()
         clean["ticker"] = clean["ticker"].astype(str).str.strip()
-        clean["added_date"] = clean["added_date"].fillna(date.today())
+        # Fill missing added_date with today's date
+        clean["added_date"] = clean["added_date"].fillna(pd.Timestamp.today().date())
+        # Convert all date columns to strings (fixes JSON serialization)
+        for col in clean.select_dtypes(include=['datetime64', 'datetime', 'date']).columns:
+            clean[col] = clean[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
         sheets_db.write_df("watchlist_etfs", clean)
         sheets_db.clear_caches()
         st.success("Saved.")
@@ -120,20 +130,35 @@ elif section == "Watchlist ETFs":
 
 elif section == "Backtest history upload":
     st.subheader("Upload historical backtest returns")
-    st.write(
-        "Upload an Excel file with a 'Backtest Data' sheet containing columns "
-        "**Date**, **Portfolio** (exactly 'Portfolio 1' or 'Portfolio 2'), and "
-        "**Index Value** (a performance index starting at 100). Re-uploading "
-        "replaces that portfolio's backtest data (doesn't affect the other "
-        "portfolio's). The last date in your upload becomes the hand-off "
-        "point where live tracking (your current positions/weights) takes over."
-    )
-    with open("data/backtest_template.xlsx", "rb") as f:
+    
+    # --- Ensure the template file exists ---
+    import os
+    import pandas as pd
+    os.makedirs("data", exist_ok=True)
+    template_path = "data/backtest_template.xlsx"
+    if not os.path.exists(template_path):
+        # Create a minimal template with the required columns
+        dummy_df = pd.DataFrame(columns=["Date", "Portfolio", "Index Value"])
+        dummy_df.to_excel(template_path, index=False, sheet_name="Backtest Data")
+        # Add an instructions sheet (optional)
+        with pd.ExcelWriter(template_path, mode='a', engine='openpyxl') as writer:
+            instructions = pd.DataFrame([
+                ["How to fill in this template"],
+                ["1. One row per date, per portfolio."],
+                ["2. 'Date' = the date of that data point (any consistent format like YYYY-MM-DD works)."],
+                ["3. 'Portfolio' must be exactly 'Portfolio 1' or 'Portfolio 2'."],
+                ["4. 'Index Value' = a performance index starting at 100."]
+            ])
+            instructions.to_excel(writer, sheet_name="Instructions", index=False, header=False)
+
+    # Now offer the download
+    with open(template_path, "rb") as f:
         st.download_button(
             "Download blank template", f, file_name="backtest_template.xlsx",
             help="Fill this in with your own historical returns, then upload it below.",
         )
-
+    
+    # ----- The rest of the original upload logic (unchanged) -----
     uploaded = st.file_uploader("Upload filled-in template", type=["xlsx"])
     if uploaded is not None:
         try:
