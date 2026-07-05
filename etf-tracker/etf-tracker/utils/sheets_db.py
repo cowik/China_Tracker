@@ -52,7 +52,7 @@ def _get_or_create_worksheet(tab_name: str):
         return ws
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=360, show_spinner=False)
 def read_df(tab_name: str) -> pd.DataFrame:
     ws = _get_or_create_worksheet(tab_name)
     records = ws.get_all_records()
