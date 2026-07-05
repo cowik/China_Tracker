@@ -26,7 +26,7 @@ SCOPES = [
 SHEET_SCHEMAS = {
     "portfolio1_positions": ["ticker", "name", "asset_type", "weight", "cost_basis", "purchase_date"],
     "portfolio2_positions": ["ticker", "name", "asset_type", "weight", "cost_basis", "purchase_date"],
-    "watchlist_etfs": ["ticker", "name", "added_date"],
+    "watchlist_etfs": ["ticker", "name"],
     "dividends": ["portfolio", "ticker", "ex_date", "pay_date", "amount_per_share", "detected_on"],
     "transactions": ["date", "portfolio", "ticker", "type", "amount_note"],
     "backtest_history": ["date", "portfolio", "index_value"],
