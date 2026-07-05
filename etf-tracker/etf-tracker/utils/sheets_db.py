@@ -1,22 +1,12 @@
 """
-Persistence layer: everything is stored in one Google Sheet, in separate
-tabs (worksheets). This keeps real portfolio data out of the GitHub repo -
-only a service-account credential (in Streamlit secrets) can access it.
-
-Tabs (created automatically on first run if missing):
-  portfolio1_positions: ticker, name, asset_type, weight, cost_basis, purchase_date
-  portfolio2_positions: (same columns)
-  watchlist_etfs: ticker, name, added_date
-  dividends: portfolio, ticker, ex_date, pay_date, amount_per_share, detected_on
-  transactions: date, portfolio, ticker, type, amount_note
-  backtest_history: date, portfolio, index_value (a performance index starting at 100)
-  portfolio_settings: portfolio, rebalance_frequency (none/monthly/quarterly/semiannual/annual)
+Persistence layer: everything is stored in one Google Sheet, in separate tabs.
 """
 from __future__ import annotations
 import gspread
 import pandas as pd
 import streamlit as st
 from google.oauth2.service_account import Credentials
+import datetime
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -24,8 +14,8 @@ SCOPES = [
 ]
 
 SHEET_SCHEMAS = {
-    "portfolio1_positions": ["ticker", "name", "asset_type", "weight", "cost_basis", "purchase_date"],
-    "portfolio2_positions": ["ticker", "name", "asset_type", "weight", "cost_basis", "purchase_date"],
+    "portfolio1_positions": ["ticker", "name", "asset_type", "weight", "purchase_date"],
+    "portfolio2_positions": ["ticker", "name", "asset_type", "weight", "purchase_date"],
     "watchlist_etfs": ["ticker", "name"],
     "dividends": ["portfolio", "ticker", "ex_date", "pay_date", "amount_per_share", "detected_on"],
     "transactions": ["date", "portfolio", "ticker", "type", "amount_note"],
@@ -69,20 +59,34 @@ def read_df(tab_name: str) -> pd.DataFrame:
 
 
 def write_df(tab_name: str, df: pd.DataFrame) -> None:
-    """Overwrites the entire tab with df's contents."""
+    """Overwrites the entire tab with df's contents, safely converting dates to strings."""
     ws = _get_or_create_worksheet(tab_name)
     ws.clear()
     headers = list(df.columns) if not df.empty else SHEET_SCHEMAS.get(tab_name, [])
     ws.append_row(headers)
     if not df.empty:
-        # --- FIX: convert any datetime columns to strings ---
+        # --- SAFE CONVERSION: convert any datetime/date to ISO string ---
         df = df.copy()
-        # Only use 'datetime64' and 'datetime' – remove 'date'
-        for col in df.select_dtypes(include=['datetime64', 'datetime']).columns:
-            df[col] = df[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
-        # Convert everything to plain strings/numbers gspread can serialize
+        for col in df.columns:
+            # Check for datetime64 columns
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                df[col] = df[col].dt.strftime('%Y-%m-%d')
+            # Check for object columns that might contain date objects
+            elif df[col].dtype == 'object':
+                first_valid = df[col].first_valid_index()
+                if first_valid is not None:
+                    sample = df.loc[first_valid, col]
+                    if isinstance(sample, (pd.Timestamp, datetime.datetime, datetime.date)):
+                        df[col] = df[col].apply(
+                            lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x)
+                        )
+        # Convert all to list of lists, handling NaN
         rows = df.astype(object).where(pd.notnull(df), "").values.tolist()
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
+        try:
+            ws.append_rows(rows, value_input_option="USER_ENTERED")
+        except Exception as e:
+            st.error(f"Failed to save data to Google Sheets: {e}")
+            raise
 
 
 def append_rows(tab_name: str, rows: list[dict]) -> None:
@@ -91,11 +95,14 @@ def append_rows(tab_name: str, rows: list[dict]) -> None:
     ws = _get_or_create_worksheet(tab_name)
     headers = SHEET_SCHEMAS.get(tab_name) or list(rows[0].keys())
     values = [[r.get(h, "") for h in headers] for r in rows]
-    ws.append_rows(values, value_input_option="USER_ENTERED")
+    try:
+        ws.append_rows(values, value_input_option="USER_ENTERED")
+    except Exception as e:
+        st.error(f"Failed to append rows: {e}")
+        raise
 
 
 def clear_caches():
-    """Call after any write so the dashboard picks up fresh data immediately."""
     st.cache_data.clear()
 
 
