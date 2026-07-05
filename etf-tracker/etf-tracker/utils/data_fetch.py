@@ -221,7 +221,8 @@ def _fetch_yfinance_batch(tickers: List[str], start: str, end: str) -> Dict[str,
 # ---- Persistent cache (price_cache sheet) ----
 def _get_cached_series(ticker: str, asset_type: str) -> pd.Series:
     df = sheets_db.read_df("price_cache")
-    if df.empty:
+    # If empty or missing required columns, return empty
+    if df.empty or not all(col in df.columns for col in ["ticker", "asset_type", "date", "close"]):
         return pd.Series(dtype=float)
     mask = (df["ticker"].astype(str).str.strip() == ticker) & (df["asset_type"] == asset_type)
     cached = df[mask].copy()
