@@ -35,6 +35,7 @@ REBALANCE_OPTIONS = {
 
 def positions_editor(tab_name: str, label: str):
     st.subheader(f"{label} positions")
+    df = sheets_db.read_df(tab_name)
 
     current_freq = sheets_db.get_rebalance_frequency(label)
     chosen_freq = st.selectbox(
