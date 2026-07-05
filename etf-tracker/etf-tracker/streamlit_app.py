@@ -40,7 +40,8 @@ def load_backtest(portfolio_label: str) -> pd.Series:
         return pd.Series(dtype=float)
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date")
-    return pd.Series(df["index_value"].astype(float).values, index=df["date"])
+    # Use pd.to_numeric for safety
+    return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -70,7 +71,6 @@ with st.spinner("Loading your data..."):
     p2_holdings = load_holdings("portfolio2_positions")
     watchlist_df = load_watchlist()
 
-    # Check for backtest data to decide whether to include portfolios even without holdings
     backtest_df = sheets_db.read_df("backtest_history")
 
     series_options = {}
