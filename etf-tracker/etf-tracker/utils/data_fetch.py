@@ -1,5 +1,7 @@
 """
 Data fetching with append‑only cache for both stocks (BaoStock) and ETFs (yfinance).
+- Backward‑adjusted prices: BaoStock adjustflag='1', yfinance 'Close'.
+- Stores prices with decimal points (floats), not integers.
 - Never deletes cached data.
 - Fetches only missing days up to the last trading day.
 - Leading zeros preserved.
@@ -49,7 +51,6 @@ def _to_yfinance_ticker(ticker: str) -> str:
 
 def _get_last_trading_day() -> str:
     """Return the most recent actual trading day (weekday or from baostock)."""
-    # Try baostock first for accuracy
     try:
         import baostock as bs
         today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
@@ -68,15 +69,14 @@ def _get_last_trading_day() -> str:
                     return max(trading_days)
     except Exception:
         pass
-
     # Fallback: go back until we hit a weekday
     dt = datetime.now(BEIJING_TZ)
-    while dt.weekday() > 4:  # Saturday=5, Sunday=6
+    while dt.weekday() > 4:
         dt = dt - timedelta(days=1)
     return dt.strftime("%Y-%m-%d")
 
 
-def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjustflag='2', retries=3):
+def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjustflag='1', retries=3):
     import baostock as bs
     for attempt in range(retries):
         try:
@@ -90,7 +90,7 @@ def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjust
                 start_date=start_date,
                 end_date=end_date,
                 frequency="d",
-                adjustflag=adjustflag
+                adjustflag=adjustflag  # '1' = backward‑adjusted
             )
             if rs.error_code != '0':
                 bs.logout()
@@ -106,6 +106,7 @@ def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjust
             df['date'] = pd.to_datetime(df['date'])
             df['close'] = pd.to_numeric(df['close'], errors='coerce')
             df = df.dropna(subset=['close'])
+            df['close'] = df['close'].astype(float)
             return df[['date', 'close']]
         except Exception:
             time.sleep(2 * (1 + random.random()))
@@ -118,10 +119,15 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3):
             df = yf.download(ticker_yf, start=start, end=end, progress=False, timeout=15)
             if df.empty:
                 return pd.DataFrame()
-            close = df['Close']
+            # Use 'Close' (backward‑adjusted for splits, not dividends)
+            if 'Close' in df.columns:
+                close = df['Close']
+            else:
+                close = df['Adj Close']  # fallback
             out = close.reset_index()
             out.columns = ['date', 'close']
             out['date'] = pd.to_datetime(out['date'])
+            out['close'] = out['close'].astype(float)
             return out
         except Exception:
             if attempt < retries - 1:
@@ -147,6 +153,7 @@ def _get_cached_series(ticker: str, asset_type: str) -> pd.Series:
         return pd.Series(dtype=float)
     cached["date"] = pd.to_datetime(cached["date"])
     cached = cached.sort_values("date")
+    cached["close"] = pd.to_numeric(cached["close"], errors="coerce")
     return cached.set_index("date")["close"]
 
 
@@ -158,9 +165,14 @@ def _append_to_cache(ticker: str, asset_type: str, new_data: pd.DataFrame) -> No
     new_data["asset_type"] = asset_type
     new_data["date"] = pd.to_datetime(new_data["date"]).dt.strftime("%Y-%m-%d")
     new_data["close"] = new_data["close"].astype(float)
-    rows = new_data[["ticker", "date", "close", "asset_type"]].to_dict(orient="records")
-    sheets_db.append_rows("price_cache", rows)
-    st.cache_data.clear()
+    rows = new_data[["ticker", "date", "close", "asset_type"]].values.tolist()
+    try:
+        ws = sheets_db._get_or_create_worksheet("price_cache")
+        ws.append_rows(rows, value_input_option="USER_ENTERED")
+        st.cache_data.clear()
+    except Exception as e:
+        st.error(f"Failed to append to cache: {e}")
+        raise
 
 
 # ---- Main price series function ----
@@ -168,10 +180,8 @@ def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "
     ticker = _clean_ticker(ticker)
     last_trading_day = _get_last_trading_day()
 
-    # Get cached data
     cached_series = _get_cached_series(ticker, asset_type)
 
-    # Determine start fetch date
     if not cached_series.empty:
         last_cached = cached_series.index.max().strftime("%Y-%m-%d")
         start_fetch_dt = pd.Timestamp(last_cached) + timedelta(days=1)
@@ -179,12 +189,11 @@ def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "
     else:
         start_fetch = start_date
 
-    # Fetch missing data up to last trading day
     if start_fetch <= last_trading_day:
         st.info(f"📡 Fetching {asset_type} data for {ticker} from {start_fetch} to {last_trading_day}")
         if asset_type == 'stock':
             new_df = _retry_download_baostock(_to_baostock_ticker(ticker), start_fetch, last_trading_day)
-        else:  # etf
+        else:
             new_df = _retry_download_yfinance(_to_yfinance_ticker(ticker), start_fetch, last_trading_day)
         if not new_df.empty:
             _append_to_cache(ticker, asset_type, new_df)
