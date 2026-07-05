@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import date
+from datetime import date, timedelta
 
 from utils import sheets_db, data_fetch, returns
 
@@ -51,7 +51,6 @@ def load_backtest(portfolio_label: str) -> pd.Series:
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
     price_data = {}
     for h in holdings:
-        # Fetch only from inception date (saves massive fetching time)
         price_data[h["ticker"]] = data_fetch.get_price_series(
             h["ticker"], h["asset_type"],
             start_date=h["inception_date"].strftime("%Y-%m-%d")
@@ -61,11 +60,29 @@ def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[
     rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
     live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
 
+    # Primary attempt: compute live from the cutoff date
     live_index = returns.compute_live_index(
         holdings, price_data,
         rebalance_frequency=rebalance_freq,
         live_start_date=live_start_date,
     )
+
+    # ----- FALLBACK: if live_index is empty but holdings exist, compute from inception and slice -----
+    if live_index.empty and holdings:
+        # Compute from earliest inception date
+        live_index = returns.compute_live_index(
+            holdings, price_data,
+            rebalance_frequency=rebalance_freq,
+            live_start_date=None,
+        )
+        if not live_index.empty and live_start_date is not None:
+            # Keep only dates >= live_start_date (backtest end)
+            live_index = live_index[live_index.index >= live_start_date]
+
+    # If live_index still empty, return only backtest
+    if live_index.empty:
+        return backtest_index_values
+
     return returns.chain_link_backtest(backtest_index_values, live_index)
 
 
@@ -114,28 +131,69 @@ chart_series = series_options[choice].dropna()
 if chart_series.empty:
     st.warning("No price data available yet for this selection.")
 else:
+    # Period selector (same as before)
+    period_options = ["1D", "1W", "1M", "3M", "6M", "1Y", "YTD", "3Y", "5Y", "Max"]
+    period_days = {
+        "1D": 1,
+        "1W": 7,
+        "1M": 30,
+        "3M": 91,
+        "6M": 182,
+        "1Y": 365,
+        "YTD": None,
+        "3Y": 1095,
+        "5Y": 1825,
+        "Max": None,
+    }
+    default_index = period_options.index("1Y")
+    selected_period = st.selectbox("Chart period", period_options, index=default_index)
+
+    today = pd.Timestamp(date.today())
+    if selected_period == "YTD":
+        start_date = pd.Timestamp(year=today.year, month=1, day=1)
+    elif selected_period == "Max":
+        start_date = chart_series.index.min()
+    else:
+        days = period_days[selected_period]
+        start_date = today - pd.Timedelta(days=days)
+
+    filtered_series = chart_series[chart_series.index >= start_date]
+    if filtered_series.empty:
+        st.warning("Not enough data for this period.")
+        st.stop()
+
+    start_value = filtered_series.iloc[0]
+    normalized_series = (filtered_series / start_value - 1) * 100
+
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=chart_series.index, y=(chart_series - 1) * 100,
-        mode="lines", name=choice, line=dict(width=2),
+        x=normalized_series.index,
+        y=normalized_series,
+        mode="lines",
+        name=choice,
+        line=dict(width=2),
     ))
     fig.update_layout(
-        yaxis_title="Total return (%)",
+        yaxis_title=f"Return (%) from {selected_period} start",
         margin=dict(l=10, r=10, t=30, b=10),
         height=450,
+        hovermode="x",
     )
     fig.update_xaxes(
-        rangeselector=dict(buttons=[
-            dict(count=5, label="5D", step="day", stepmode="backward"),
-            dict(count=1, label="1M", step="month", stepmode="backward"),
-            dict(count=3, label="3M", step="month", stepmode="backward"),
-            dict(count=6, label="6M", step="month", stepmode="backward"),
-            dict(step="year", stepmode="todate", label="YTD"),
-            dict(count=1, label="1Y", step="year", stepmode="backward"),
-            dict(count=3, label="3Y", step="year", stepmode="backward"),
-            dict(count=5, label="5Y", step="year", stepmode="backward"),
-            dict(step="all", label="Max"),
-        ]),
+        range=[start_date, today],
+        rangeselector=dict(
+            buttons=[
+                dict(count=5, label="5D", step="day", stepmode="backward"),
+                dict(count=1, label="1M", step="month", stepmode="backward"),
+                dict(count=3, label="3M", step="month", stepmode="backward"),
+                dict(count=6, label="6M", step="month", stepmode="backward"),
+                dict(step="year", stepmode="todate", label="YTD"),
+                dict(count=1, label="1Y", step="year", stepmode="backward"),
+                dict(count=3, label="3Y", step="year", stepmode="backward"),
+                dict(count=5, label="5Y", step="year", stepmode="backward"),
+                dict(step="all", label="Max"),
+            ]
+        ),
         rangeslider=dict(visible=False),
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -163,5 +221,3 @@ if rows:
     st.dataframe(styled, use_container_width=True)
 else:
     st.info("Not enough data yet to build the comparison table.")
-
-# Dividend caption removed – feature not implemented.
