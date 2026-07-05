@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-from datetime import date
 import os
 
 from utils import sheets_db, data_fetch, returns, auth
@@ -23,7 +22,6 @@ section = st.sidebar.radio(
         PORTFOLIO_LABELS["portfolio2_positions"],
         "Watchlist ETFs",
         "Backtest history upload",
-        "Dividend log",
     ],
 )
 
@@ -208,7 +206,6 @@ elif section == "Watchlist ETFs":
         st.rerun()
 
 elif section == "Backtest history upload":
-    # (unchanged, uses Russian labels)
     st.subheader("Upload historical backtest returns")
     st.caption("Upload an Excel file with columns: Date, Portfolio (exactly 'Возможности Китая' or 'Возможности Китая. Специальная 2'), Index Value (starting at 100).")
 
@@ -279,62 +276,3 @@ elif section == "Backtest history upload":
     st.divider()
     st.write("Current stored backtest history:")
     st.dataframe(sheets_db.read_df("backtest_history"), use_container_width=True)
-
-elif section == "Dividend log":
-    # (unchanged)
-    st.subheader("Dividend log")
-    st.write(
-        "Dividends are auto-detected for stocks/ETFs held in your two portfolios "
-        "(not the watchlist, since those aren't real holdings). Detection folds "
-        "into total-return figures via dividend-adjusted price data automatically - "
-        "this log is for your visibility and to correct any mistakes."
-    )
-
-    if st.button("🔍 Scan for new dividends now"):
-        existing = sheets_db.read_df("dividends")
-        existing_keys = set()
-        if not existing.empty:
-            existing_keys = set(zip(existing["portfolio"], existing["ticker"], existing["ex_date"].astype(str)))
-
-        new_rows = []
-        for tab_name, label in [("portfolio1_positions", "Возможности Китая"), ("portfolio2_positions", "Возможности Китая. Специальная 2")]:
-            pos_df = sheets_db.read_df(tab_name)
-            for _, row in pos_df.iterrows():
-                ticker = str(row.get("ticker", "")).strip()
-                if not ticker:
-                    continue
-                asset_type = str(row.get("asset_type", "stock")).strip().lower() or "stock"
-                purchase_date = pd.to_datetime(row.get("purchase_date"), errors="coerce")
-                divs = data_fetch.get_dividends(ticker, asset_type)
-                if divs.empty:
-                    continue
-                if pd.notna(purchase_date):
-                    divs = divs[divs["ex_date"] >= purchase_date]
-                for _, d in divs.iterrows():
-                    ex_date_str = str(d["ex_date"].date())
-                    key = (label, ticker, ex_date_str)
-                    if key in existing_keys:
-                        continue
-                    new_rows.append({
-                        "portfolio": label,
-                        "ticker": ticker,
-                        "ex_date": ex_date_str,
-                        "pay_date": str(d["pay_date"].date()) if pd.notna(d["pay_date"]) else "",
-                        "amount_per_share": d["amount_per_share"],
-                        "detected_on": str(date.today()),
-                    })
-        if new_rows:
-            sheets_db.append_rows("dividends", new_rows)
-            sheets_db.clear_caches()
-            st.success(f"Found and logged {len(new_rows)} new dividend record(s).")
-        else:
-            st.info("No new dividends found since last scan.")
-
-    st.divider()
-    div_df = sheets_db.read_df("dividends")
-    edited = st.data_editor(div_df, num_rows="dynamic", use_container_width=True, key="editor_dividends")
-    if st.button("Save corrections", key="save_dividends"):
-        sheets_db.write_df("dividends", edited)
-        sheets_db.clear_caches()
-        st.success("Saved.")
-        st.rerun()
