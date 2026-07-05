@@ -4,10 +4,7 @@ Data fetching with persistent Google Sheets cache.
 - Stocks: BaoStock (adjustflag='2') -> BaoStock unadjusted (adjustflag='3')
   -> yfinance, in that order, first non-empty result wins.
 - ETFs: yfinance only.
-- Historical data is cached in the `price_cache` Google Sheet tab, so a
-  cold start (app restart / redeploy / waking from Streamlit Cloud sleep)
-  doesn't have to re-download full history for every ticker. After the
-  first full fetch, only dates missing from the cache are ever fetched.
+- Historical data is cached in the `price_cache` Google Sheet tab.
 """
 from __future__ import annotations
 import time
@@ -31,17 +28,7 @@ def _now_beijing() -> datetime:
 
 
 def _is_trading_day(dt: datetime) -> bool:
-    # Simplified: Mon-Fri. Public holidays just come back empty from the
-    # data source, so they don't need special-casing here.
     return dt.weekday() < 5
-
-
-def _should_fetch_today() -> bool:
-    """True once today's close should exist: a trading day, 15:20+ Beijing."""
-    now = _now_beijing()
-    if not _is_trading_day(now):
-        return False
-    return (now.hour > 15) or (now.hour == 15 and now.minute >= 20)
 
 
 def _clean_ticker(ticker: str) -> str:
@@ -64,6 +51,33 @@ def _to_yfinance_ticker(ticker: str) -> str:
     if not ticker:
         return ticker
     return f"{ticker}.SS" if ticker[0] in ("5", "6") else f"{ticker}.SZ"
+
+
+def _get_last_trading_day() -> str:
+    """Return the most recent actual trading day."""
+    try:
+        import baostock as bs
+        today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+        start = (datetime.now(BEIJING_TZ) - timedelta(days=10)).strftime("%Y-%m-%d")
+        lg = bs.login()
+        if lg is not None and lg.error_code == '0':
+            rs = bs.query_trade_dates(start_date=start, end_date=today)
+            if rs.error_code == '0':
+                trading_days = []
+                while rs.next():
+                    row = rs.get_row_data()
+                    if row and len(row) > 0:
+                        trading_days.append(row[0])
+                bs.logout()
+                if trading_days:
+                    return max(trading_days)
+    except Exception:
+        pass
+    # fallback: last weekday
+    dt = datetime.now(BEIJING_TZ)
+    while dt.weekday() > 4:
+        dt -= timedelta(days=1)
+    return dt.strftime("%Y-%m-%d")
 
 
 # ------------------------------------------------------------ raw fetchers --
@@ -124,8 +138,6 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
 
 
 def _fetch_missing_data(ticker: str, asset_type: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """Same source precedence as before: BaoStock adjusted -> BaoStock
-    unadjusted -> yfinance for stocks; yfinance only for ETFs."""
     if asset_type == "stock":
         bs_ticker = _to_baostock_ticker(ticker)
         df = _retry_download_baostock(bs_ticker, start_date, end_date, adjustflag="2")
@@ -143,15 +155,10 @@ def _fetch_missing_data(ticker: str, asset_type: str, start_date: str, end_date:
 # --------------------------------------------------------- sheet-backed cache --
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_all_price_cache() -> pd.DataFrame:
-    """Read the whole price_cache tab once per hour. Cheap in-memory reuse
-    across every ticker lookup until it expires or is explicitly cleared."""
     return sheets_db.read_df("price_cache")
 
 
 def _clear_price_cache_memory() -> None:
-    """Invalidate ONLY the in-memory price cache. Appending a new price
-    shouldn't force positions/backtests/watchlist reads to re-hit Sheets too -
-    that's what sheets_db.clear_caches() is for, and it's overkill here."""
     _load_all_price_cache.clear()
 
 
@@ -159,12 +166,9 @@ def _get_cached_series(ticker: str, asset_type: str) -> pd.Series:
     df = _load_all_price_cache()
     if df.empty:
         return pd.Series(dtype=float)
-
-    # ----- FIX: ensure required columns exist -----
-    required_cols = ["ticker", "asset_type", "date", "close"]
-    if not all(col in df.columns for col in required_cols):
+    required = ["ticker", "asset_type", "date", "close"]
+    if not all(c in df.columns for c in required):
         return pd.Series(dtype=float)
-
     mask = (df["ticker"].astype(str).str.strip() == ticker) & (df["asset_type"] == asset_type)
     cached = df[mask].copy()
     if cached.empty:
@@ -188,10 +192,6 @@ def _update_cache(ticker: str, asset_type: str, new_data: pd.DataFrame) -> None:
 
 # --------------------------------------------------------------- batch watchlist --
 def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
-    """
-    Fetch all watchlist ETFs in a single yfinance batch request.
-    Returns dict: label -> normalized price series (starting at 1.0).
-    """
     if watchlist_df.empty:
         return {}
     tickers = []
@@ -204,18 +204,13 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
         yf_ticker = _to_yfinance_ticker(ticker)
         tickers.append(yf_ticker)
         labels.append(f"{name} ({ticker})")
-
     if not tickers:
         return {}
-
-    # Use a reasonable date range for the watchlist (last 10 years)
-    end_date = _now_beijing().date()
-    start_date = (end_date - timedelta(days=3650)).strftime("%Y-%m-%d")
-    end_date_str = end_date.strftime("%Y-%m-%d")
-
+    end_date = _get_last_trading_day()
+    start_date = (datetime.now(BEIJING_TZ) - timedelta(days=3650)).strftime("%Y-%m-%d")
     try:
         data = yf.download(
-            tickers, start=start_date, end=end_date_str,
+            tickers, start=start_date, end=end_date,
             progress=False, timeout=30, group_by='ticker',
             auto_adjust=True,
         )
@@ -235,7 +230,6 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
                 continue
             close = close.dropna()
             if not close.empty:
-                # Normalize to start at 1.0
                 result[label] = close / close.iloc[0]
         return result
     except Exception as e:
@@ -248,9 +242,7 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
 def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "1990-01-01") -> pd.Series:
     """
     Date-indexed close price series, backed by the price_cache sheet.
-    Only dates missing from the cache are ever fetched live - after the
-    first full fetch for a ticker, this is normally a sheet read plus at
-    most one small incremental fetch for the latest day(s).
+    Only dates missing from the cache are ever fetched live.
     """
     ticker = _clean_ticker(ticker)
     cached_series = _get_cached_series(ticker, asset_type)
@@ -260,14 +252,8 @@ def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "
     else:
         start_fetch = start_date
 
-    today = _now_beijing().date()
-    if _should_fetch_today():
-        end_fetch = today.strftime("%Y-%m-%d")
-    else:
-        # Today's close isn't available yet (pre-market-close or a
-        # non-trading day) - cap at yesterday so we don't keep re-asking
-        # the API for a bar that doesn't exist, on every single rerun.
-        end_fetch = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    # Always fetch up to the most recent trading day (not today's date if pre-market or weekend)
+    end_fetch = _get_last_trading_day()
 
     if start_fetch <= end_fetch:
         new_df = _fetch_missing_data(ticker, asset_type, start_fetch, end_fetch)
