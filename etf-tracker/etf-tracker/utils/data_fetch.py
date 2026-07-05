@@ -1,6 +1,6 @@
 """
 Data fetching with append‑only cache for both stocks (BaoStock) and ETFs (yfinance).
-- Backward‑adjusted prices: BaoStock adjustflag='1', yfinance 'Close'.
+- Forward‑adjusted prices: BaoStock adjustflag='2', yfinance 'Adj Close'.
 - Stores prices with decimal points (floats), not integers.
 - Never deletes cached data.
 - Fetches only missing days up to the last trading day.
@@ -76,7 +76,7 @@ def _get_last_trading_day() -> str:
     return dt.strftime("%Y-%m-%d")
 
 
-def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjustflag='1', retries=3):
+def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjustflag='2', retries=3):
     import baostock as bs
     for attempt in range(retries):
         try:
@@ -90,7 +90,7 @@ def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjust
                 start_date=start_date,
                 end_date=end_date,
                 frequency="d",
-                adjustflag=adjustflag  # '1' = backward‑adjusted
+                adjustflag=adjustflag  # '2' = forward‑adjusted (total return)
             )
             if rs.error_code != '0':
                 bs.logout()
@@ -119,11 +119,11 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3):
             df = yf.download(ticker_yf, start=start, end=end, progress=False, timeout=15)
             if df.empty:
                 return pd.DataFrame()
-            # Use 'Close' (backward‑adjusted for splits, not dividends)
-            if 'Close' in df.columns:
-                close = df['Close']
+            # Forward‑adjusted total return
+            if 'Adj Close' in df.columns:
+                close = df['Adj Close']
             else:
-                close = df['Adj Close']  # fallback
+                close = df['Close']
             out = close.reset_index()
             out.columns = ['date', 'close']
             out['date'] = pd.to_datetime(out['date'])
@@ -140,14 +140,22 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3):
 # ---- Cache functions (append‑only) ----
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_price_cache() -> pd.DataFrame:
-    return sheets_db.read_df("price_cache")
+    df = sheets_db.read_df("price_cache")
+    # Ensure required columns exist to avoid KeyError
+    required_cols = ["ticker", "date", "close", "asset_type"]
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = None
+    return df
 
 
 def _get_cached_series(ticker: str, asset_type: str) -> pd.Series:
     df = _load_price_cache()
     if df.empty:
         return pd.Series(dtype=float)
-    mask = (df["ticker"].astype(str).str.strip() == ticker) & (df["asset_type"] == asset_type)
+    # Ensure ticker is string
+    df["ticker"] = df["ticker"].astype(str).str.strip()
+    mask = (df["ticker"] == ticker) & (df["asset_type"] == asset_type)
     cached = df[mask].copy()
     if cached.empty:
         return pd.Series(dtype=float)
