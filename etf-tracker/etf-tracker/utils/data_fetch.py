@@ -1,7 +1,7 @@
 """
 Data fetching:
-- Stocks: BaoStock primary (adjusted), fallback to yfinance
-- ETFs: yfinance primary, fallback to BaoStock
+- Stocks: BaoStock primary (adjusted), fallback to unadjusted, then yfinance.
+- ETFs: yfinance primary (no fallback to BaoStock).
 """
 from __future__ import annotations
 import time
@@ -49,7 +49,6 @@ def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjust
         try:
             lg = bs.login()
             if lg is None or lg.error_code != '0':
-                st.warning(f"BaoStock login failed: {lg.error_msg if lg else 'None'}")
                 time.sleep(2)
                 continue
 
@@ -62,7 +61,6 @@ def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjust
                 adjustflag=adjustflag  # '2' = forward-adjusted (total return)
             )
             if rs.error_code != '0':
-                st.warning(f"BaoStock query failed: {rs.error_msg}")
                 bs.logout()
                 time.sleep(2)
                 continue
@@ -81,8 +79,7 @@ def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjust
             df = df.dropna(subset=['close'])
             return df[['date', 'close']]
 
-        except Exception as e:
-            st.warning(f"BaoStock attempt {attempt+1} failed: {e}")
+        except Exception:
             time.sleep(2 * (1 + random.random()))
     return pd.DataFrame()
 
@@ -99,68 +96,58 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3):
             out.columns = ['date', 'close']
             out['date'] = pd.to_datetime(out['date'])
             return out
-        except Exception as e:
+        except Exception:
             if attempt < retries - 1:
                 time.sleep(2 * (1 + random.random()))
             else:
-                raise e
+                raise
     return pd.DataFrame()
 
 
 def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "1990-01-01") -> pd.Series:
     """
     Returns date-indexed close price series.
-    - For stocks: try BaoStock (adjusted) → BaoStock (unadjusted) → yfinance
-    - For ETFs: try yfinance → BaoStock
+    - Stocks: BaoStock adjusted → BaoStock unadjusted → yfinance (fallback).
+    - ETFs: yfinance only (no fallback).
     """
     ticker = _clean_ticker(ticker)
     df = pd.DataFrame()
 
     if asset_type == 'stock':
-        # 1. BaoStock adjusted (total return)
         bs_ticker = _to_baostock_ticker(ticker)
+
+        # 1. BaoStock adjusted (total return)
         df = _retry_download_baostock(bs_ticker, start_date, "2050-01-01", adjustflag='2')
-        if not df.empty:
-            st.info(f"✅ {ticker} (stock) loaded via BaoStock (adjusted)")
-            return df.set_index("date")["close"].sort_index()
+        if df.empty:
+            # 2. BaoStock unadjusted
+            df = _retry_download_baostock(bs_ticker, start_date, "2050-01-01", adjustflag='3')
 
-        # 2. BaoStock unadjusted
-        df = _retry_download_baostock(bs_ticker, start_date, "2050-01-01", adjustflag='3')
-        if not df.empty:
-            st.info(f"✅ {ticker} (stock) loaded via BaoStock (unadjusted)")
-            return df.set_index("date")["close"].sort_index()
+        if df.empty:
+            # 3. yfinance fallback
+            yf_ticker = _to_yfinance_ticker(ticker)
+            try:
+                df = _retry_download_yfinance(yf_ticker, start_date, "2050-01-01")
+            except Exception:
+                pass
 
-        # 3. yfinance fallback
-        yf_ticker = _to_yfinance_ticker(ticker)
-        try:
-            df = _retry_download_yfinance(yf_ticker, start_date, "2050-01-01")
-            if not df.empty:
-                st.info(f"✅ {ticker} (stock) loaded via yfinance (fallback)")
-                return df.set_index("date")["close"].sort_index()
-        except Exception:
-            pass
+        if df.empty:
+            st.warning(f"❌ No data for {ticker} (stock)")
+            return pd.Series(dtype=float)
+
+        return df.set_index("date")["close"].sort_index()
 
     else:  # 'etf'
-        # 1. yfinance
         yf_ticker = _to_yfinance_ticker(ticker)
         try:
             df = _retry_download_yfinance(yf_ticker, start_date, "2050-01-01")
-            if not df.empty:
-                st.info(f"✅ {ticker} (ETF) loaded via yfinance")
-                return df.set_index("date")["close"].sort_index()
         except Exception:
             pass
 
-        # 2. BaoStock fallback for ETFs (if yfinance fails)
-        bs_ticker = _to_baostock_ticker(ticker)
-        df = _retry_download_baostock(bs_ticker, start_date, "2050-01-01", adjustflag='2')
-        if not df.empty:
-            st.info(f"✅ {ticker} (ETF) loaded via BaoStock (fallback)")
-            return df.set_index("date")["close"].sort_index()
+        if df.empty:
+            st.warning(f"❌ No data for {ticker} (ETF)")
+            return pd.Series(dtype=float)
 
-    # If all failed
-    st.warning(f"❌ No data for {ticker} (asset_type={asset_type})")
-    return pd.Series(dtype=float)
+        return df.set_index("date")["close"].sort_index()
 
 
 # Backward compatibility
