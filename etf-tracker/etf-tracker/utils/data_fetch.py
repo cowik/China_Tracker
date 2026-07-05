@@ -248,7 +248,6 @@ def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "
         df = _fetch_missing_data(ticker, asset_type, start_date, last_trading)
         if df.empty:
             return pd.Series(dtype=float)
-        # Ensure we don't duplicate data already in cache (but we overwrite later)
         # Update the cache with this new data
         _update_cache(ticker, asset_type, df)
         # Now read from cache to return the full series
