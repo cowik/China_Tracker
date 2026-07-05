@@ -1,283 +1,180 @@
-"""
-Data fetching with persistent Google Sheets cache.
-- Stocks: BaoStock (adjustflag='2') -> BaoStock unadjusted -> yfinance.
-- ETFs: yfinance only.
-- Cached in `price_cache` sheet; uses normal cache (no force_refresh).
-"""
-from __future__ import annotations
-import time
-import random
-from datetime import datetime, timedelta
-from typing import Dict, List
-
-import pandas as pd
 import streamlit as st
-import yfinance as yf
-import pytz
+import pandas as pd
+import plotly.graph_objects as go
+from datetime import date
 
-from utils import sheets_db
+from utils import sheets_db, data_fetch, returns
 
-BEIJING_TZ = pytz.timezone("Asia/Shanghai")
+st.set_page_config(page_title="My Portfolio & ETF Tracker", layout="wide")
+st.title("📈 My Portfolio & ETF Tracker")
+st.caption(
+    "All performance figures are **total return** (price change + dividends "
+    "reinvested), not just price change."
+)
 
-
-# ---------------------------------------------------------------- helpers --
-def _now_beijing() -> datetime:
-    return datetime.now(BEIJING_TZ)
-
-
-def _is_trading_day(dt: datetime) -> bool:
-    return dt.weekday() < 5
-
-
-def _clean_ticker(ticker: str) -> str:
-    ticker = str(ticker).strip()
-    for suffix in (".SH", ".SZ", ".SS"):
-        if ticker.upper().endswith(suffix):
-            ticker = ticker[: -len(suffix)]
-    return ticker.replace(".", "")
+PORTFOLIO_LABELS = {
+    "portfolio1_positions": "Возможности Китая",
+    "portfolio2_positions": "Возможности Китая. Специальная 2",
+}
 
 
-def _to_baostock_ticker(ticker: str) -> str:
-    ticker = _clean_ticker(ticker)
-    if not ticker:
-        return ticker
-    return f"sh.{ticker}" if ticker[0] in ("5", "6") else f"sz.{ticker}"
-
-
-def _to_yfinance_ticker(ticker: str) -> str:
-    ticker = _clean_ticker(ticker)
-    if not ticker:
-        return ticker
-    return f"{ticker}.SS" if ticker[0] in ("5", "6") else f"{ticker}.SZ"
-
-
-def _get_last_trading_day() -> str:
-    """Return the most recent actual trading day."""
-    try:
-        import baostock as bs
-        today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
-        start = (datetime.now(BEIJING_TZ) - timedelta(days=10)).strftime("%Y-%m-%d")
-        lg = bs.login()
-        if lg is not None and lg.error_code == '0':
-            rs = bs.query_trade_dates(start_date=start, end_date=today)
-            if rs.error_code == '0':
-                trading_days = []
-                while rs.next():
-                    row = rs.get_row_data()
-                    if row and len(row) > 0:
-                        trading_days.append(row[0])
-                bs.logout()
-                if trading_days:
-                    return max(trading_days)
-    except Exception:
-        pass
-    dt = datetime.now(BEIJING_TZ)
-    while dt.weekday() > 4:
-        dt -= timedelta(days=1)
-    return dt.strftime("%Y-%m-%d")
-
-
-# ------------------------------------------------------------ raw fetchers --
-def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjustflag="2", retries=3) -> pd.DataFrame:
-    import baostock as bs
-    for attempt in range(retries):
+def load_holdings(tab_name: str) -> list[dict]:
+    df = sheets_db.read_df(tab_name)
+    holdings = []
+    for _, row in df.iterrows():
         try:
-            lg = bs.login()
-            if lg is None or lg.error_code != "0":
-                time.sleep(2)
-                continue
-            rs = bs.query_history_k_data_plus(
-                ticker, "date,close",
-                start_date=start_date, end_date=end_date,
-                frequency="d", adjustflag=adjustflag,
-            )
-            if rs.error_code != "0":
-                bs.logout()
-                time.sleep(2)
-                continue
-            data_list = []
-            while rs.next():
-                data_list.append(rs.get_row_data())
-            bs.logout()
-            if not data_list:
-                return pd.DataFrame()
-            df = pd.DataFrame(data_list, columns=rs.fields)
-            df["date"] = pd.to_datetime(df["date"])
-            df["close"] = pd.to_numeric(df["close"], errors="coerce")
-            return df.dropna(subset=["close"])[["date", "close"]]
-        except Exception:
-            time.sleep(2 * (1 + random.random()))
-    return pd.DataFrame()
+            holdings.append({
+                "ticker": str(row["ticker"]).strip(),
+                "asset_type": str(row.get("asset_type", "stock")).strip().lower() or "stock",
+                "weight": float(row["weight"]) / 100.0,
+                "inception_date": pd.to_datetime(row["purchase_date"]),
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    return holdings
 
 
-def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) -> pd.DataFrame:
-    for attempt in range(retries):
-        try:
-            df = yf.download(
-                ticker_yf, start=start, end=end,
-                progress=False, timeout=15,
-                auto_adjust=True,
-            )
-            if df.empty:
-                return pd.DataFrame()
-            close = df["Adj Close"] if "Adj Close" in df.columns else df["Close"]
-            out = close.reset_index()
-            out.columns = ["date", "close"]
-            out["date"] = pd.to_datetime(out["date"])
-            return out
-        except Exception:
-            if attempt < retries - 1:
-                time.sleep(2 * (1 + random.random()))
-            else:
-                return pd.DataFrame()
-    return pd.DataFrame()
-
-
-def _fetch_missing_data(ticker: str, asset_type: str, start_date: str, end_date: str) -> pd.DataFrame:
-    if asset_type == "stock":
-        bs_ticker = _to_baostock_ticker(ticker)
-        df = _retry_download_baostock(bs_ticker, start_date, end_date, adjustflag="2")
-        if df.empty:
-            df = _retry_download_baostock(bs_ticker, start_date, end_date, adjustflag="3")
-        if df.empty:
-            yf_ticker = _to_yfinance_ticker(ticker)
-            df = _retry_download_yfinance(yf_ticker, start_date, end_date)
-        return df
-    else:
-        yf_ticker = _to_yfinance_ticker(ticker)
-        return _retry_download_yfinance(yf_ticker, start_date, end_date)
-
-
-# --------------------------------------------------------- sheet-backed cache --
-@st.cache_data(ttl=3600, show_spinner=False)
-def _load_all_price_cache() -> pd.DataFrame:
-    return sheets_db.read_df("price_cache")
-
-
-def _clear_price_cache_memory() -> None:
-    _load_all_price_cache.clear()
-
-
-def _get_cached_series(ticker: str, asset_type: str) -> pd.Series:
-    df = _load_all_price_cache()
+def load_backtest(portfolio_label: str) -> pd.Series:
+    df = sheets_db.read_df("backtest_history")
     if df.empty:
         return pd.Series(dtype=float)
-    required = ["ticker", "asset_type", "date", "close"]
-    if not all(c in df.columns for c in required):
+    df = df[df["portfolio"] == portfolio_label].copy()
+    if df.empty:
         return pd.Series(dtype=float)
-    mask = (df["ticker"].astype(str).str.strip() == ticker) & (df["asset_type"] == asset_type)
-    cached = df[mask].copy()
-    if cached.empty:
-        return pd.Series(dtype=float)
-    cached["date"] = pd.to_datetime(cached["date"])
-    return cached.sort_values("date").set_index("date")["close"]
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date")
+    return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 
-def _update_cache(ticker: str, asset_type: str, new_data: pd.DataFrame) -> None:
-    if new_data.empty:
-        return
-    new_data = new_data.copy()
-    new_data["ticker"] = ticker
-    new_data["asset_type"] = asset_type
-    new_data["date"] = pd.to_datetime(new_data["date"]).dt.strftime("%Y-%m-%d")
-    new_data["close"] = new_data["close"].astype(float)
-    rows = new_data[["ticker", "date", "close", "asset_type"]].to_dict(orient="records")
-    sheets_db.append_rows("price_cache", rows)
-    _clear_price_cache_memory()
-
-
-# --------------------------------------------------------------- batch watchlist --
-def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
-    if watchlist_df.empty:
-        return {}
-    tickers = []
-    labels = []
-    for _, row in watchlist_df.iterrows():
-        ticker = str(row["ticker"]).strip()
-        if not ticker:
+@st.cache_data(ttl=600, show_spinner=False)  # reverted to 10 min for safety
+def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
+    price_data = {}
+    for h in holdings:
+        try:
+            price_data[h["ticker"]] = data_fetch.get_price_series(
+                h["ticker"], h["asset_type"],
+                start_date=h["inception_date"].strftime("%Y-%m-%d")
+            )
+        except Exception as e:
+            st.warning(f"Failed to fetch price data for {h['ticker']}: {e}")
+            # Skip this holding – it won't be included in the portfolio
             continue
-        name = str(row.get("name", "")).strip() or ticker
-        yf_ticker = _to_yfinance_ticker(ticker)
-        tickers.append(yf_ticker)
-        labels.append(f"{name} ({ticker})")
-    if not tickers:
-        return {}
-    end_date = _get_last_trading_day()
-    start_date = (datetime.now(BEIJING_TZ) - timedelta(days=3650)).strftime("%Y-%m-%d")
-    try:
-        data = yf.download(
-            tickers, start=start_date, end=end_date,
-            progress=False, timeout=30, group_by='ticker',
-            auto_adjust=True,
+
+    if not price_data:
+        st.warning(f"No valid price data for any holding in {portfolio_label}. Showing backtest only.")
+        return load_backtest(portfolio_label)
+
+    backtest_index_values = load_backtest(portfolio_label)
+    rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
+    live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
+
+    live_index = returns.compute_live_index(
+        holdings, price_data,
+        rebalance_frequency=rebalance_freq,
+        live_start_date=live_start_date,
+    )
+
+    # Fallback if live_index is empty
+    if live_index.empty and holdings:
+        live_index = returns.compute_live_index(
+            holdings, price_data,
+            rebalance_frequency=rebalance_freq,
+            live_start_date=None,
         )
-        if data.empty:
-            return {}
-        result = {}
-        for i, yf_t in enumerate(tickers):
-            label = labels[i]
-            if yf_t not in data.columns.levels[0]:
-                continue
-            sub = data[yf_t]
-            if 'Adj Close' in sub.columns:
-                close = sub['Adj Close']
-            elif 'Close' in sub.columns:
-                close = sub['Close']
-            else:
-                continue
-            close = close.dropna()
-            if not close.empty:
-                result[label] = close / close.iloc[0]
-        return result
-    except Exception as e:
-        st.warning(f"Batch yfinance fetch failed: {e}")
-        return {}
+        if not live_index.empty and live_start_date is not None:
+            live_index = live_index[live_index.index >= live_start_date]
+
+    return returns.chain_link_backtest(backtest_index_values, live_index)
 
 
-# ------------------------------------------------------------------ public --
-@st.cache_data(ttl=900, show_spinner=False)
-def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "1990-01-01") -> pd.Series:
-    """
-    Date-indexed close price series, backed by the price_cache sheet.
-    Only dates missing from the cache are ever fetched live.
-    """
-    ticker = _clean_ticker(ticker)
-    cached_series = _get_cached_series(ticker, asset_type)
-
-    if not cached_series.empty:
-        start_fetch = (cached_series.index.max() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-    else:
-        start_fetch = start_date
-
-    end_fetch = _get_last_trading_day()
-
-    if start_fetch <= end_fetch:
-        new_df = _fetch_missing_data(ticker, asset_type, start_fetch, end_fetch)
-        if not new_df.empty:
-            if not cached_series.empty:
-                new_df = new_df[~new_df["date"].isin(cached_series.index)]
-            if not new_df.empty:
-                _update_cache(ticker, asset_type, new_df)
-                cached_series = _get_cached_series(ticker, asset_type)
-
-    if cached_series.empty:
-        return pd.Series(dtype=float)
-    return cached_series.sort_index()
+def load_watchlist() -> pd.DataFrame:
+    return sheets_db.read_df("watchlist_etfs")
 
 
-# ---- backward compatibility ----
-def get_stock_hist(ticker: str, start_date: str = "1990-01-01", end_date: str = "2050-01-01") -> pd.DataFrame:
-    s = get_price_series(ticker, asset_type="stock", start_date=start_date)
-    if s.empty:
-        return pd.DataFrame()
-    return s.reset_index().rename(columns={"index": "date"})
+with st.spinner("Loading your data..."):
+    p1_holdings = load_holdings("portfolio1_positions")
+    p2_holdings = load_holdings("portfolio2_positions")
+    watchlist_df = load_watchlist()
 
+    backtest_df = sheets_db.read_df("backtest_history")
 
-def get_etf_hist(ticker: str, start_date: str = "1990-01-01", end_date: str = "2050-01-01") -> pd.DataFrame:
-    s = get_price_series(ticker, asset_type="etf", start_date=start_date)
-    if s.empty:
-        return pd.DataFrame()
-    return s.reset_index().rename(columns={"index": "date"})
+    series_options = {}
 
+    if p1_holdings or not backtest_df[backtest_df["portfolio"] == PORTFOLIO_LABELS["portfolio1_positions"]].empty:
+        series_options[PORTFOLIO_LABELS["portfolio1_positions"]] = compute_portfolio_index(
+            "portfolio1_positions", PORTFOLIO_LABELS["portfolio1_positions"], p1_holdings
+        )
 
-def get_dividends(ticker: str, asset_type: str) -> pd.DataFrame:
-    return pd.DataFrame()
+    if p2_holdings or not backtest_df[backtest_df["portfolio"] == PORTFOLIO_LABELS["portfolio2_positions"]].empty:
+        series_options[PORTFOLIO_LABELS["portfolio2_positions"]] = compute_portfolio_index(
+            "portfolio2_positions", PORTFOLIO_LABELS["portfolio2_positions"], p2_holdings
+        )
+
+    if not watchlist_df.empty:
+        watchlist_prices = data_fetch.get_watchlist_prices(watchlist_df)
+        series_options.update(watchlist_prices)
+
+if not series_options:
+    st.info(
+        "No portfolios or watchlist ETFs set up yet. Go to the **Manage** page "
+        "(left sidebar) to add your positions and ETFs."
+    )
+    st.stop()
+
+# --- Chart ---
+st.subheader("Performance chart")
+choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
+chart_series = series_options[choice].dropna()
+
+if chart_series.empty:
+    st.warning("No price data available yet for this selection.")
+else:
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=chart_series.index, y=(chart_series - 1) * 100,
+        mode="lines", name=choice, line=dict(width=2),
+    ))
+    fig.update_layout(
+        yaxis_title="Total return (%)",
+        margin=dict(l=10, r=10, t=30, b=10),
+        height=450,
+    )
+    fig.update_xaxes(
+        rangeselector=dict(buttons=[
+            dict(count=5, label="5D", step="day", stepmode="backward"),
+            dict(count=1, label="1M", step="month", stepmode="backward"),
+            dict(count=3, label="3M", step="month", stepmode="backward"),
+            dict(count=6, label="6M", step="month", stepmode="backward"),
+            dict(step="year", stepmode="todate", label="YTD"),
+            dict(count=1, label="1Y", step="year", stepmode="backward"),
+            dict(count=3, label="3Y", step="year", stepmode="backward"),
+            dict(count=5, label="5Y", step="year", stepmode="backward"),
+            dict(step="all", label="Max"),
+        ]),
+        rangeslider=dict(visible=False),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# --- Comparison table ---
+st.subheader("Comparison table")
+today = pd.Timestamp(date.today())
+rows = []
+for label, s in series_options.items():
+    if s.dropna().empty:
+        continue
+    row = returns.comparison_row(s, today)
+    row["Name"] = label
+    rows.append(row)
+
+if rows:
+    table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "1Y"]]
+
+    def color_pct(v):
+        if pd.isna(v):
+            return ""
+        return f"color: {'#0a7a2f' if v >= 0 else '#c02020'}"
+
+    styled = table_df.style.format("{:+.2f}%", na_rep="—").map(color_pct)
+    st.dataframe(styled, use_container_width=True)
+else:
+    st.info("Not enough data yet to build the comparison table.")
