@@ -12,7 +12,6 @@ st.caption(
     "reinvested), not just price change."
 )
 
-# ----- Russian portfolio labels -----
 PORTFOLIO_LABELS = {
     "portfolio1_positions": "Возможности Китая",
     "portfolio2_positions": "Возможности Китая. Специальная 2",
@@ -51,10 +50,11 @@ def load_backtest(portfolio_label: str) -> pd.Series:
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
     price_data = {}
     for h in holdings:
-        # Fetch only from inception date (saves massive fetching time)
+        # Fetch from inception, but force refresh for live period
         price_data[h["ticker"]] = data_fetch.get_price_series(
             h["ticker"], h["asset_type"],
-            start_date=h["inception_date"].strftime("%Y-%m-%d")
+            start_date=h["inception_date"].strftime("%Y-%m-%d"),
+            force_refresh=True  # <-- NEW: bypass cache to get latest data
         )
 
     backtest_index_values = load_backtest(portfolio_label)
@@ -67,9 +67,8 @@ def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[
         live_start_date=live_start_date,
     )
 
-    # ----- FIX: fallback if live_index is empty -----
+    # Fallback if live_index is empty
     if live_index.empty and holdings:
-        # Compute from earliest inception and slice from backtest end
         live_index = returns.compute_live_index(
             holdings, price_data,
             rebalance_frequency=rebalance_freq,
@@ -94,19 +93,16 @@ with st.spinner("Loading your data..."):
 
     series_options = {}
 
-    # Portfolio 1
     if p1_holdings or not backtest_df[backtest_df["portfolio"] == PORTFOLIO_LABELS["portfolio1_positions"]].empty:
         series_options[PORTFOLIO_LABELS["portfolio1_positions"]] = compute_portfolio_index(
             "portfolio1_positions", PORTFOLIO_LABELS["portfolio1_positions"], p1_holdings
         )
 
-    # Portfolio 2
     if p2_holdings or not backtest_df[backtest_df["portfolio"] == PORTFOLIO_LABELS["portfolio2_positions"]].empty:
         series_options[PORTFOLIO_LABELS["portfolio2_positions"]] = compute_portfolio_index(
             "portfolio2_positions", PORTFOLIO_LABELS["portfolio2_positions"], p2_holdings
         )
 
-    # Watchlist ETFs (batch fetch)
     if not watchlist_df.empty:
         watchlist_prices = data_fetch.get_watchlist_prices(watchlist_df)
         series_options.update(watchlist_prices)
@@ -175,5 +171,3 @@ if rows:
     st.dataframe(styled, use_container_width=True)
 else:
     st.info("Not enough data yet to build the comparison table.")
-
-# Dividend caption removed – feature not implemented.
