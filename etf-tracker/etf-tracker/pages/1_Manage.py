@@ -160,11 +160,26 @@ elif section == "Backtest history upload":
             help="Fill this in with your own historical returns, then upload it below.",
         )
     
-    # Upload logic
+    # Upload logic with Russian decimal fix
     uploaded = st.file_uploader("Upload filled-in template", type=["xlsx"])
     if uploaded is not None:
         try:
-            new_data = pd.read_excel(uploaded, sheet_name="Backtest Data")
+            # Read all columns as text to handle decimal separator issues
+            new_data = pd.read_excel(uploaded, sheet_name="Backtest Data", dtype=str)
+            
+            # Clean the "Index Value" column: replace comma with dot, remove thousand separators
+            if "Index Value" in new_data.columns:
+                new_data["Index Value"] = new_data["Index Value"].str.replace(",", ".").str.replace(" ", "").str.replace("'", "")
+                new_data["Index Value"] = new_data["Index Value"].str.replace(r"[^\d.\-]", "", regex=True)
+                new_data["Index Value"] = pd.to_numeric(new_data["Index Value"], errors="coerce")
+            
+            # Clean the Date column
+            if "Date" in new_data.columns:
+                new_data["Date"] = pd.to_datetime(new_data["Date"], errors="coerce")
+            
+            # Drop rows with missing required fields
+            new_data = new_data.dropna(subset=["Date", "Index Value", "Portfolio"])
+            
         except Exception as e:
             st.error(f"Couldn't read that file - is it based on the template? ({e})")
             new_data = None
