@@ -69,16 +69,16 @@ def read_df(tab_name: str) -> pd.DataFrame:
 
 
 def write_df(tab_name: str, df: pd.DataFrame) -> None:
-    """Overwrites the entire tab with df's contents. Fine at personal-tracker scale
-    (a few dozen rows per tab) - simpler and safer than incremental diff/patch."""
+    """Overwrites the entire tab with df's contents."""
     ws = _get_or_create_worksheet(tab_name)
     ws.clear()
     headers = list(df.columns) if not df.empty else SHEET_SCHEMAS.get(tab_name, [])
     ws.append_row(headers)
     if not df.empty:
-        # --- FIX: convert any datetime/date columns to strings ---
+        # --- FIX: convert any datetime columns to strings ---
         df = df.copy()
-        for col in df.select_dtypes(include=['datetime64', 'datetime', 'date']).columns:
+        # Only use 'datetime64' and 'datetime' – remove 'date'
+        for col in df.select_dtypes(include=['datetime64', 'datetime']).columns:
             df[col] = df[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
         # Convert everything to plain strings/numbers gspread can serialize
         rows = df.astype(object).where(pd.notnull(df), "").values.tolist()
@@ -95,9 +95,7 @@ def append_rows(tab_name: str, rows: list[dict]) -> None:
 
 
 def clear_caches():
-    """Call after any write so the dashboard picks up fresh data immediately.
-    Clears ALL cached data (including price history), which is a little
-    wasteful but simple and avoids stale-cache bugs at this app's scale."""
+    """Call after any write so the dashboard picks up fresh data immediately."""
     st.cache_data.clear()
 
 
