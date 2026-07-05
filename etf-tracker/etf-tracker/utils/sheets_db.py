@@ -1,5 +1,5 @@
 """
-Persistence layer with ticker zero‑padding.
+Persistence layer – now includes `price_cache` for historical price data.
 """
 from __future__ import annotations
 import gspread
@@ -21,9 +21,10 @@ SHEET_SCHEMAS = {
     "transactions": ["date", "portfolio", "ticker", "type", "amount_note"],
     "backtest_history": ["date", "portfolio", "index_value"],
     "portfolio_settings": ["portfolio", "rebalance_frequency"],
+    "price_cache": ["ticker", "date", "close", "asset_type"],  # new
 }
 
-TICKER_COLUMNS = {"ticker"}  # columns that should be zero‑padded
+TICKER_COLUMNS = {"ticker"}
 
 
 @st.cache_resource(show_spinner=False)
@@ -58,24 +59,21 @@ def read_df(tab_name: str) -> pd.DataFrame:
     if not records:
         return pd.DataFrame(columns=SHEET_SCHEMAS.get(tab_name, []))
     df = pd.DataFrame(records)
-    # --- Zero‑pad ticker columns to 6 digits ---
+    # Zero-pad ticker columns
     for col in TICKER_COLUMNS:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
-            # Replace non‑numeric and empty with empty string, then zero‑pad
             df[col] = df[col].str.replace(r'[^\d]', '', regex=True)
             df[col] = df[col].apply(lambda x: x.zfill(6) if x.isdigit() else x)
     return df
 
 
 def write_df(tab_name: str, df: pd.DataFrame) -> None:
-    """Overwrites the entire tab with df's contents, safely converting dates to strings."""
     ws = _get_or_create_worksheet(tab_name)
     ws.clear()
     headers = list(df.columns) if not df.empty else SHEET_SCHEMAS.get(tab_name, [])
     ws.append_row(headers)
     if not df.empty:
-        # --- SAFE CONVERSION: convert any datetime/date to ISO string ---
         df = df.copy()
         for col in df.columns:
             if pd.api.types.is_datetime64_any_dtype(df[col]):
@@ -88,13 +86,9 @@ def write_df(tab_name: str, df: pd.DataFrame) -> None:
                         df[col] = df[col].apply(
                             lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x)
                         )
-        # Ensure ticker columns are stored as text with leading zeros (they are already strings)
         for col in TICKER_COLUMNS:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.strip()
-                # Keep leading zeros by storing as text – they are already strings, but ensure they are not converted to numbers by gspread
-                # No additional conversion needed; we'll force them to be interpreted as strings by gspread.
-        # Convert all to list of lists, handling NaN
         rows = df.astype(object).where(pd.notnull(df), "").values.tolist()
         try:
             ws.append_rows(rows, value_input_option="USER_ENTERED")
