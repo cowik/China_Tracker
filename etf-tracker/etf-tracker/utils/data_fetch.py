@@ -1,15 +1,20 @@
 """
-Data fetching: 
+Data fetching:
 - ETFs: efinance primary, yfinance fallback, BaoStock last
 - Stocks: BaoStock primary, efinance fallback, yfinance last
 """
 from __future__ import annotations
-import pandas as pd
-import streamlit as st
+import os
+import tempfile
 import time
 import random
+import streamlit as st
 
-# Try to import efinance; if not available, fall back
+# --- Fix efinance permission error: set cache dir to a writable temp location ---
+_cache_dir = tempfile.mkdtemp(prefix="efinance_")
+os.environ["EFINANCE_HOME"] = _cache_dir
+
+# Now import efinance (will use the above cache dir)
 try:
     import efinance as ef
     EFINANCE_AVAILABLE = True
