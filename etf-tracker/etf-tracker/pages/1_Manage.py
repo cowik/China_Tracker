@@ -52,14 +52,17 @@ def positions_editor(tab_name: str, label: str):
         st.success(f"Rebalancing set to: {REBALANCE_OPTIONS[chosen_freq]}")
         st.rerun()
 
-    df = sheets_db.read_df(tab_name)
-    for col in POSITION_COLS:
-        if col not in df.columns:
-            df[col] = None
-    if not df.empty:
-        df["purchase_date"] = pd.to_datetime(df["purchase_date"], errors="coerce").dt.date
-        df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
-        df["cost_basis"] = pd.to_numeric(df["cost_basis"], errors="coerce")
+df = sheets_db.read_df(tab_name)
+for col in POSITION_COLS:
+    if col not in df.columns:
+        df[col] = None
+if not df.empty:
+    # --- FIX: ensure ticker is string before data_editor ---
+    if "ticker" in df.columns:
+        df["ticker"] = df["ticker"].astype(str).str.strip()
+    df["purchase_date"] = pd.to_datetime(df["purchase_date"], errors="coerce").dt.date
+    df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
+    df["cost_basis"] = pd.to_numeric(df["cost_basis"], errors="coerce")
 
     total_weight = df["weight"].sum() if not df.empty else 0
     if df.empty:
