@@ -117,20 +117,22 @@ if chart_series.empty:
     st.warning("No price data available yet for this selection.")
 else:
     # ---- Period selector (re-base chart) ----
-    period_options = ["5D", "1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "Max"]
-    # Map period to number of days (YTD and Max are special)
-    period_map = {
-        "5D": 5,
+    # Use exact day counts from returns.PERIOD_DEFS for consistency with table
+    period_options = ["1D", "1W", "1M", "3M", "6M", "1Y", "YTD", "3Y", "5Y", "Max"]
+    period_days = {
+        "1D": 1,
+        "1W": 7,
         "1M": 30,
         "3M": 91,
         "6M": 182,
-        "YTD": None,  # special: start of year
         "1Y": 365,
+        "YTD": None,
         "3Y": 1095,
         "5Y": 1825,
         "Max": None,
     }
-    default_index = period_options.index("5Y")  # default to 5Y
+    # Default to 1Y for consistency with table
+    default_index = period_options.index("1Y")
     selected_period = st.selectbox("Chart period", period_options, index=default_index)
 
     # Compute start date for the selected period
@@ -140,7 +142,7 @@ else:
     elif selected_period == "Max":
         start_date = chart_series.index.min()
     else:
-        days = period_map[selected_period]
+        days = period_days[selected_period]
         start_date = today - pd.Timedelta(days=days)
 
     # Filter series to the selected period
