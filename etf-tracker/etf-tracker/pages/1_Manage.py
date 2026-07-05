@@ -200,20 +200,27 @@ elif section == "Backtest history upload":
                         if abs(first_val - 100) > 0.01:
                             st.info(f"Note: {pf}'s first Index Value is {first_val}, not 100. That's fine - it'll be auto-scaled to start at 100.")
                     if st.button("Confirm and save this backtest data"):
+                        # --- FIX: Ensure numeric conversion for all index_value data ---
                         existing = sheets_db.read_df("backtest_history")
                         uploaded_portfolios = set(new_data["Portfolio"])
-                        if not existing.empty:
-                            existing = existing[~existing["portfolio"].isin(uploaded_portfolios)]
-                        new_data = new_data.rename(columns={
+                        
+                        # Prepare new_data with correct types
+                        new_data_clean = new_data.rename(columns={
                             "Date": "date", "Portfolio": "portfolio",
                             "Index Value": "index_value",
                         })
-                        new_data["date"] = pd.to_datetime(new_data["date"]).dt.strftime("%Y-%m-%d")
-                        # Ensure index_value is numeric
-                        new_data["index_value"] = pd.to_numeric(new_data["index_value"], errors="coerce")
-                        combined = pd.concat([existing, new_data[["date", "portfolio", "index_value"]]], ignore_index=True)
-                        # Again ensure the column is float after concat
+                        new_data_clean["date"] = pd.to_datetime(new_data_clean["date"]).dt.strftime("%Y-%m-%d")
+                        new_data_clean["index_value"] = pd.to_numeric(new_data_clean["index_value"], errors="coerce")
+                        
+                        # Prepare existing data (convert to numeric)
+                        if not existing.empty:
+                            existing = existing[~existing["portfolio"].isin(uploaded_portfolios)]
+                            existing["index_value"] = pd.to_numeric(existing["index_value"], errors="coerce")
+                        
+                        # Combine and force numeric
+                        combined = pd.concat([existing, new_data_clean[["date", "portfolio", "index_value"]]], ignore_index=True)
                         combined["index_value"] = pd.to_numeric(combined["index_value"], errors="coerce")
+                        
                         sheets_db.write_df("backtest_history", combined)
                         sheets_db.clear_caches()
                         st.success("Backtest history saved.")
