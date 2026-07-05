@@ -42,7 +42,10 @@ def positions_editor(tab_name: str, label: str):
         format_func=lambda k: REBALANCE_OPTIONS[k],
         index=list(REBALANCE_OPTIONS.keys()).index(current_freq),
         key=f"rebal_{tab_name}",
-        help="How often to reset all positions back to their target weights.",
+        help="How often to reset all positions back to their target weights. "
+             "Applies from your backtest's hand-off date (or your earliest "
+             "position's purchase date if you haven't uploaded a backtest) "
+             "up to today.",
     )
     if chosen_freq != current_freq:
         sheets_db.save_rebalance_frequency(label, chosen_freq)
@@ -60,30 +63,30 @@ def positions_editor(tab_name: str, label: str):
         df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
         df["cost_basis"] = pd.to_numeric(df["cost_basis"], errors="coerce")
 
-    total_weight = df["weight"].sum() if not df.empty else 0
-    if df.empty:
-        st.caption("No positions yet - add rows below.")
-    elif abs(total_weight - 100) > 0.5:
-        st.warning(f"Weights sum to {total_weight:.1f}% – adjust to 100% for accurate tracking.")
-    else:
-        st.caption(f"Weights sum to {total_weight:.1f}%. ✅")
+        total_weight = df["weight"].sum()
+        if df.empty:
+            st.caption("No positions yet - add rows below.")
+        elif abs(total_weight - 100) > 0.5:
+            st.warning(f"Weights sum to {total_weight:.1f}% – adjust to 100% for accurate tracking.")
+        else:
+            st.caption(f"Weights sum to {total_weight:.1f}%. ✅")
 
-    edited = st.data_editor(
-        df[list(POSITION_COLS.keys())],
-        column_config=POSITION_COLS,
-        num_rows="dynamic",
-        use_container_width=True,
-        key=f"editor_{tab_name}",
-    )
-    if st.button("Save changes", key=f"save_{tab_name}"):
-        clean = edited.dropna(subset=["ticker"]).copy()
-        clean["ticker"] = clean["ticker"].astype(str).str.strip()
-        for col in clean.select_dtypes(include=['datetime64', 'datetime']).columns:
-            clean[col] = clean[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
-        sheets_db.write_df(tab_name, clean)
-        sheets_db.clear_caches()
-        st.success("Saved.")
-        st.rerun()
+        edited = st.data_editor(
+            df[list(POSITION_COLS.keys())],
+            column_config=POSITION_COLS,
+            num_rows="dynamic",
+            use_container_width=True,
+            key=f"editor_{tab_name}",
+        )
+        if st.button("Save changes", key=f"save_{tab_name}"):
+            clean = edited.dropna(subset=["ticker"]).copy()
+            clean["ticker"] = clean["ticker"].astype(str).str.strip()
+            for col in clean.select_dtypes(include=['datetime64', 'datetime']).columns:
+                clean[col] = clean[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
+            sheets_db.write_df(tab_name, clean)
+            sheets_db.clear_caches()
+            st.success("Saved.")
+            st.rerun()
 
 
 if section == "Portfolio 1":
@@ -97,15 +100,12 @@ elif section == "Watchlist ETFs":
     cols = {
         "ticker": st.column_config.TextColumn("Ticker", help="e.g. 510300"),
         "name": st.column_config.TextColumn("Name"),
-        "added_date": st.column_config.DateColumn("Added on"),
     }
     for col in cols:
         if col not in df.columns:
             df[col] = None
-    if not df.empty:
-        df["added_date"] = pd.to_datetime(df["added_date"], errors="coerce").dt.date
-        if "ticker" in df.columns:
-            df["ticker"] = df["ticker"].astype(str).str.strip()
+    if not df.empty and "ticker" in df.columns:
+        df["ticker"] = df["ticker"].astype(str).str.strip()
 
     edited = st.data_editor(
         df[list(cols.keys())], column_config=cols, num_rows="dynamic",
@@ -114,9 +114,6 @@ elif section == "Watchlist ETFs":
     if st.button("Save changes", key="save_watchlist"):
         clean = edited.dropna(subset=["ticker"]).copy()
         clean["ticker"] = clean["ticker"].astype(str).str.strip()
-        clean["added_date"] = clean["added_date"].fillna(pd.Timestamp.today().date())
-        for col in clean.select_dtypes(include=['datetime64', 'datetime']).columns:
-            clean[col] = clean[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
         sheets_db.write_df("watchlist_etfs", clean)
         sheets_db.clear_caches()
         st.success("Saved.")
@@ -196,13 +193,19 @@ elif section == "Backtest history upload":
 
 elif section == "Dividend log":
     st.subheader("Dividend log")
-    # ... (unchanged, keep as before)
-    st.write("Dividends are auto-detected...")
+    st.write(
+        "Dividends are auto-detected for stocks/ETFs held in your two portfolios "
+        "(not the watchlist, since those aren't real holdings). Detection folds "
+        "into total-return figures via dividend-adjusted price data automatically - "
+        "this log is for your visibility and to correct any mistakes."
+    )
+
     if st.button("🔍 Scan for new dividends now"):
         existing = sheets_db.read_df("dividends")
         existing_keys = set()
         if not existing.empty:
             existing_keys = set(zip(existing["portfolio"], existing["ticker"], existing["ex_date"].astype(str)))
+
         new_rows = []
         for tab_name, label in [("portfolio1_positions", "Portfolio 1"), ("portfolio2_positions", "Portfolio 2")]:
             pos_df = sheets_db.read_df(tab_name)
@@ -233,9 +236,9 @@ elif section == "Dividend log":
         if new_rows:
             sheets_db.append_rows("dividends", new_rows)
             sheets_db.clear_caches()
-            st.success(f"Found {len(new_rows)} new dividend record(s).")
+            st.success(f"Found and logged {len(new_rows)} new dividend record(s).")
         else:
-            st.info("No new dividends found.")
+            st.info("No new dividends found since last scan.")
 
     st.divider()
     div_df = sheets_db.read_df("dividends")
