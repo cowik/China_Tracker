@@ -12,8 +12,11 @@ st.caption(
     "reinvested), not just price change."
 )
 
-PORTFOLIO_NAMES = {"portfolio1_positions": "Portfolio 1", "portfolio2_positions": "Portfolio 2"}
-
+# ----- Mapping to Russian labels -----
+PORTFOLIO_LABELS = {
+    "portfolio1_positions": "Возможности Китая",
+    "portfolio2_positions": "Возможности Китая. Специальная 2",
+}
 
 def load_holdings(tab_name: str) -> list[dict]:
     df = sheets_db.read_df(tab_name)
@@ -40,7 +43,6 @@ def load_backtest(portfolio_label: str) -> pd.Series:
         return pd.Series(dtype=float)
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date")
-    # Convert stored strings to float
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 
@@ -75,14 +77,19 @@ with st.spinner("Loading your data..."):
 
     series_options = {}
 
-    # Include portfolio if it has holdings OR backtest data
-    if p1_holdings or not backtest_df[backtest_df["portfolio"] == "Portfolio 1"].empty:
-        series_options["Portfolio 1"] = compute_portfolio_index("portfolio1_positions", "Portfolio 1", p1_holdings)
+    # Portfolio 1
+    if p1_holdings or not backtest_df[backtest_df["portfolio"] == PORTFOLIO_LABELS["portfolio1_positions"]].empty:
+        series_options[PORTFOLIO_LABELS["portfolio1_positions"]] = compute_portfolio_index(
+            "portfolio1_positions", PORTFOLIO_LABELS["portfolio1_positions"], p1_holdings
+        )
 
-    if p2_holdings or not backtest_df[backtest_df["portfolio"] == "Portfolio 2"].empty:
-        series_options["Portfolio 2"] = compute_portfolio_index("portfolio2_positions", "Portfolio 2", p2_holdings)
+    # Portfolio 2
+    if p2_holdings or not backtest_df[backtest_df["portfolio"] == PORTFOLIO_LABELS["portfolio2_positions"]].empty:
+        series_options[PORTFOLIO_LABELS["portfolio2_positions"]] = compute_portfolio_index(
+            "portfolio2_positions", PORTFOLIO_LABELS["portfolio2_positions"], p2_holdings
+        )
 
-    # Watchlist ETFs
+    # Watchlist
     for _, row in watchlist_df.iterrows():
         ticker = str(row["ticker"]).strip()
         name = str(row.get("name", "")).strip() or ticker
@@ -92,7 +99,10 @@ with st.spinner("Loading your data..."):
             series_options[label] = price / price.iloc[0]
 
 if not series_options:
-    st.info("No portfolios or watchlist ETFs set up yet. Go to the **Manage** page to add them.")
+    st.info(
+        "No portfolios or watchlist ETFs set up yet. Go to the **Manage** page "
+        "(left sidebar) to add your positions and ETFs."
+    )
     st.stop()
 
 # --- Chart ---
