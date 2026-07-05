@@ -66,6 +66,18 @@ def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[
         rebalance_frequency=rebalance_freq,
         live_start_date=live_start_date,
     )
+
+    # ----- FIX: fallback if live_index is empty -----
+    if live_index.empty and holdings:
+        # Compute from earliest inception and slice from backtest end
+        live_index = returns.compute_live_index(
+            holdings, price_data,
+            rebalance_frequency=rebalance_freq,
+            live_start_date=None,
+        )
+        if not live_index.empty and live_start_date is not None:
+            live_index = live_index[live_index.index >= live_start_date]
+
     return returns.chain_link_backtest(backtest_index_values, live_index)
 
 
