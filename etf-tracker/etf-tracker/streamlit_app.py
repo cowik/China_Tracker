@@ -51,7 +51,7 @@ def load_backtest(portfolio_label: str) -> pd.Series:
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
     price_data = {}
     for h in holdings:
-        # Fetch only from inception date (huge speed boost)
+        # Fetch only from inception date (saves massive fetching time)
         price_data[h["ticker"]] = data_fetch.get_price_series(
             h["ticker"], h["asset_type"],
             start_date=h["inception_date"].strftime("%Y-%m-%d")
@@ -164,4 +164,4 @@ if rows:
 else:
     st.info("Not enough data yet to build the comparison table.")
 
-# Removed dividend caption – feature not implemented
+# Dividend caption removed – feature not implemented.
