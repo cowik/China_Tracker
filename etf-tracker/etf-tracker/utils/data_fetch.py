@@ -1,8 +1,8 @@
 """
 Data fetching with persistent Google Sheets cache.
-- Stocks: BaoStock (adjustflag='2') -> BaoStock unadjusted (adjustflag='3') -> yfinance.
+- Stocks: BaoStock (adjustflag='2') -> BaoStock unadjusted -> yfinance.
 - ETFs: yfinance only.
-- Cached in `price_cache` sheet; `force_refresh=True` bypasses cache for live data.
+- Cached in `price_cache` sheet; force_refresh=True also updates the cache.
 """
 from __future__ import annotations
 import time
@@ -238,7 +238,7 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
 def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "1990-01-01", force_refresh: bool = False) -> pd.Series:
     """
     Date-indexed close price series.
-    If force_refresh=True, ignore cache and fetch fresh data up to last trading day.
+    If force_refresh=True, fetch fresh data and update the cache.
     """
     ticker = _clean_ticker(ticker)
 
@@ -248,7 +248,14 @@ def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "
         df = _fetch_missing_data(ticker, asset_type, start_date, last_trading)
         if df.empty:
             return pd.Series(dtype=float)
-        return df.set_index("date")["close"].sort_index()
+        # Ensure we don't duplicate data already in cache (but we overwrite later)
+        # Update the cache with this new data
+        _update_cache(ticker, asset_type, df)
+        # Now read from cache to return the full series
+        cached_series = _get_cached_series(ticker, asset_type)
+        if cached_series.empty:
+            return df.set_index("date")["close"].sort_index()
+        return cached_series.sort_index()
 
     # Normal cached path
     cached_series = _get_cached_series(ticker, asset_type)
