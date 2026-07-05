@@ -12,11 +12,12 @@ st.caption(
     "reinvested), not just price change."
 )
 
-# ----- Mapping to Russian labels -----
+# ----- Russian portfolio labels -----
 PORTFOLIO_LABELS = {
     "portfolio1_positions": "Возможности Китая",
     "portfolio2_positions": "Возможности Китая. Специальная 2",
 }
+
 
 def load_holdings(tab_name: str) -> list[dict]:
     df = sheets_db.read_df(tab_name)
@@ -50,7 +51,11 @@ def load_backtest(portfolio_label: str) -> pd.Series:
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
     price_data = {}
     for h in holdings:
-        price_data[h["ticker"]] = data_fetch.get_price_series(h["ticker"], h["asset_type"])
+        # Fetch only from inception date (huge speed boost)
+        price_data[h["ticker"]] = data_fetch.get_price_series(
+            h["ticker"], h["asset_type"],
+            start_date=h["inception_date"].strftime("%Y-%m-%d")
+        )
 
     backtest_index_values = load_backtest(portfolio_label)
     rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
@@ -89,14 +94,10 @@ with st.spinner("Loading your data..."):
             "portfolio2_positions", PORTFOLIO_LABELS["portfolio2_positions"], p2_holdings
         )
 
-    # Watchlist
-    for _, row in watchlist_df.iterrows():
-        ticker = str(row["ticker"]).strip()
-        name = str(row.get("name", "")).strip() or ticker
-        label = f"{name} ({ticker})"
-        price = data_fetch.get_price_series(ticker, "etf")
-        if not price.empty:
-            series_options[label] = price / price.iloc[0]
+    # Watchlist ETFs (batch fetch)
+    if not watchlist_df.empty:
+        watchlist_prices = data_fetch.get_watchlist_prices(watchlist_df)
+        series_options.update(watchlist_prices)
 
 if not series_options:
     st.info(
@@ -163,8 +164,4 @@ if rows:
 else:
     st.info("Not enough data yet to build the comparison table.")
 
-st.caption(
-    "Positions and ETFs are managed on the **Manage** page. Dividends are "
-    "detected automatically and folded into total-return figures via "
-    "dividend-adjusted price data."
-)
+# Removed dividend caption – feature not implemented
