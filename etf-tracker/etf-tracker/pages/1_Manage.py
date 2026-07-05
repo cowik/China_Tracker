@@ -209,7 +209,11 @@ elif section == "Backtest history upload":
                             "Index Value": "index_value",
                         })
                         new_data["date"] = pd.to_datetime(new_data["date"]).dt.strftime("%Y-%m-%d")
+                        # Ensure index_value is numeric
+                        new_data["index_value"] = pd.to_numeric(new_data["index_value"], errors="coerce")
                         combined = pd.concat([existing, new_data[["date", "portfolio", "index_value"]]], ignore_index=True)
+                        # Again ensure the column is float after concat
+                        combined["index_value"] = pd.to_numeric(combined["index_value"], errors="coerce")
                         sheets_db.write_df("backtest_history", combined)
                         sheets_db.clear_caches()
                         st.success("Backtest history saved.")
