@@ -159,6 +159,12 @@ def _get_cached_series(ticker: str, asset_type: str) -> pd.Series:
     df = _load_all_price_cache()
     if df.empty:
         return pd.Series(dtype=float)
+
+    # ----- FIX: ensure required columns exist -----
+    required_cols = ["ticker", "asset_type", "date", "close"]
+    if not all(col in df.columns for col in required_cols):
+        return pd.Series(dtype=float)
+
     mask = (df["ticker"].astype(str).str.strip() == ticker) & (df["asset_type"] == asset_type)
     cached = df[mask].copy()
     if cached.empty:
