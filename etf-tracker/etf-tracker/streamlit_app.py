@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import date
+from datetime import date, timedelta
 
 from utils import sheets_db, data_fetch, returns
 
@@ -47,7 +47,7 @@ def load_backtest(portfolio_label: str) -> pd.Series:
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
     price_data = {}
     for h in holdings:
@@ -108,36 +108,85 @@ if not series_options:
 
 # --- Chart ---
 st.subheader("Performance chart")
+
+# Choose series
 choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
 chart_series = series_options[choice].dropna()
 
 if chart_series.empty:
     st.warning("No price data available yet for this selection.")
 else:
+    # ---- Period selector (re-base chart) ----
+    period_options = ["5D", "1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "Max"]
+    # Map period to number of days (YTD and Max are special)
+    period_map = {
+        "5D": 5,
+        "1M": 30,
+        "3M": 91,
+        "6M": 182,
+        "YTD": None,  # special: start of year
+        "1Y": 365,
+        "3Y": 1095,
+        "5Y": 1825,
+        "Max": None,
+    }
+    default_index = period_options.index("5Y")  # default to 5Y
+    selected_period = st.selectbox("Chart period", period_options, index=default_index)
+
+    # Compute start date for the selected period
+    today = pd.Timestamp(date.today())
+    if selected_period == "YTD":
+        start_date = pd.Timestamp(year=today.year, month=1, day=1)
+    elif selected_period == "Max":
+        start_date = chart_series.index.min()
+    else:
+        days = period_map[selected_period]
+        start_date = today - pd.Timedelta(days=days)
+
+    # Filter series to the selected period
+    filtered_series = chart_series[chart_series.index >= start_date]
+    if filtered_series.empty:
+        st.warning("Not enough data for this period.")
+        st.stop()
+
+    # Normalize to 0% at the start of the period
+    start_value = filtered_series.iloc[0]
+    normalized_series = (filtered_series / start_value - 1) * 100
+
+    # Create figure
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=chart_series.index, y=(chart_series - 1) * 100,
-        mode="lines", name=choice, line=dict(width=2),
+        x=normalized_series.index,
+        y=normalized_series,
+        mode="lines",
+        name=choice,
+        line=dict(width=2),
     ))
     fig.update_layout(
-        yaxis_title="Total return (%)",
+        yaxis_title=f"Return (%) from {selected_period} start",
         margin=dict(l=10, r=10, t=30, b=10),
         height=450,
+        hovermode="x",
     )
+    # Set x-axis range to the selected period (so the chart doesn't show earlier data)
     fig.update_xaxes(
-        rangeselector=dict(buttons=[
-            dict(count=5, label="5D", step="day", stepmode="backward"),
-            dict(count=1, label="1M", step="month", stepmode="backward"),
-            dict(count=3, label="3M", step="month", stepmode="backward"),
-            dict(count=6, label="6M", step="month", stepmode="backward"),
-            dict(step="year", stepmode="todate", label="YTD"),
-            dict(count=1, label="1Y", step="year", stepmode="backward"),
-            dict(count=3, label="3Y", step="year", stepmode="backward"),
-            dict(count=5, label="5Y", step="year", stepmode="backward"),
-            dict(step="all", label="Max"),
-        ]),
+        range=[start_date, today],
+        rangeselector=dict(
+            buttons=[
+                dict(count=5, label="5D", step="day", stepmode="backward"),
+                dict(count=1, label="1M", step="month", stepmode="backward"),
+                dict(count=3, label="3M", step="month", stepmode="backward"),
+                dict(count=6, label="6M", step="month", stepmode="backward"),
+                dict(step="year", stepmode="todate", label="YTD"),
+                dict(count=1, label="1Y", step="year", stepmode="backward"),
+                dict(count=3, label="3Y", step="year", stepmode="backward"),
+                dict(count=5, label="5Y", step="year", stepmode="backward"),
+                dict(step="all", label="Max"),
+            ]
+        ),
         rangeslider=dict(visible=False),
     )
+
     st.plotly_chart(fig, use_container_width=True)
 
 # --- Comparison table ---
@@ -163,5 +212,3 @@ if rows:
     st.dataframe(styled, use_container_width=True)
 else:
     st.info("Not enough data yet to build the comparison table.")
-
-# Dividend caption removed – feature not implemented.
