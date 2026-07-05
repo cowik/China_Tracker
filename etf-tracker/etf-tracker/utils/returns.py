@@ -19,6 +19,9 @@ def build_holding_return_factor(hfq_prices: pd.Series, inception_date) -> pd.Ser
     cumulative growth-factor series (1.0 at inception_date, growing/shrinking
     from there). Dates before inception_date are dropped.
     """
+    # Ensure index is datetime
+    if not isinstance(hfq_prices.index, pd.DatetimeIndex):
+        hfq_prices.index = pd.to_datetime(hfq_prices.index)
     hfq_prices = hfq_prices.sort_index()
     hfq_prices = hfq_prices[hfq_prices.index >= pd.Timestamp(inception_date)]
     if hfq_prices.empty:
@@ -64,11 +67,10 @@ def build_portfolio_index(
     # inception date onward. Before a holding's inception, we hold it at its
     # starting weighted value (i.e. don't let it drag the index before it existed).
     combined = pd.DataFrame(factor_frames)
-    # Forward-fill is wrong for "before inception" (no data at all there) -
-    # instead, for dates where a holding hasn't started yet, treat its
-    # contribution as its initial weight (flat), not NaN/zero, so the
-    # portfolio index still sums close to 1.0 at t0 even with staggered
-    # inception dates.
+    # --- FIX: ensure index is datetime ---
+    if not isinstance(combined.index, pd.DatetimeIndex):
+        combined.index = pd.to_datetime(combined.index)
+
     for h in holdings:
         ticker = h["ticker"]
         if ticker not in combined.columns:
@@ -82,6 +84,10 @@ def build_portfolio_index(
 
     combined = combined.sort_index().ffill()
     portfolio_index = combined.sum(axis=1)
+    # --- FIX: ensure index is datetime before filtering ---
+    if not isinstance(portfolio_index.index, pd.DatetimeIndex):
+        portfolio_index.index = pd.to_datetime(portfolio_index.index)
+
     # Renormalize so index = 1.0 exactly at the true overall inception date
     overall_start = min(pd.Timestamp(h["inception_date"]) for h in holdings)
     portfolio_index = portfolio_index[portfolio_index.index >= overall_start]
