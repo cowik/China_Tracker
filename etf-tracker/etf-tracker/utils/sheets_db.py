@@ -21,6 +21,7 @@ SHEET_SCHEMAS = {
     "transactions": ["date", "portfolio", "ticker", "type", "amount_note"],
     "backtest_history": ["date", "portfolio", "index_value"],
     "portfolio_settings": ["portfolio", "rebalance_frequency"],
+    "price_cache": ["ticker", "date", "close", "asset_type"],
     # price_cache is REMOVED
 }
 
