@@ -40,7 +40,7 @@ def load_backtest(portfolio_label: str) -> pd.Series:
         return pd.Series(dtype=float)
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date")
-    # Use pd.to_numeric for safety
+    # This converts strings to float
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 
