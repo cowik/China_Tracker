@@ -5,8 +5,43 @@ from datetime import date
 
 from utils import sheets_db, data_fetch, returns
 
-st.set_page_config(page_title="My Portfolio & ETF Tracker", layout="wide")
-st.title("📈 My Portfolio & ETF Tracker")
+# ----- Page config with collapsed sidebar -----
+st.set_page_config(
+    page_title="China Portfolio & ETF Tracker",
+    layout="wide",
+    initial_sidebar_state="collapsed",  # sidebar closed by default
+)
+
+# ----- Custom CSS to reduce top margin and tighten layout -----
+st.markdown(
+    """
+    <style>
+        /* Reduce top padding of the main container */
+        .block-container {
+            padding-top: 1rem !important;
+            padding-bottom: 0rem !important;
+        }
+        /* Reduce title margin */
+        h1 {
+            margin-top: -0.5rem !important;
+            margin-bottom: 0.25rem !important;
+        }
+        /* Reduce caption margin */
+        .stCaption {
+            margin-top: -0.25rem !important;
+            margin-bottom: 0.5rem !important;
+        }
+        /* Reduce subheader spacing */
+        h2, h3 {
+            margin-top: 0.5rem !important;
+            margin-bottom: 0.25rem !important;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.title("📈 China Portfolio & ETF Tracker")
 st.caption(
     "All performance figures are **total return** (price change + dividends "
     "reinvested), not just price change."
@@ -46,11 +81,10 @@ def load_backtest(portfolio_label: str) -> pd.Series:
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 
-@st.cache_data(ttl=3600, show_spinner=False)   # 1 hour cache
+@st.cache_data(ttl=3600, show_spinner=False)
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
     price_data = {}
     for h in holdings:
-        # Force refresh – gets latest data and updates the cache
         price_data[h["ticker"]] = data_fetch.get_price_series(
             h["ticker"], h["asset_type"],
             start_date=h["inception_date"].strftime("%Y-%m-%d"),
@@ -67,7 +101,6 @@ def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[
         live_start_date=live_start_date,
     )
 
-    # Fallback if live_index is empty
     if live_index.empty and holdings:
         live_index = returns.compute_live_index(
             holdings, price_data,
