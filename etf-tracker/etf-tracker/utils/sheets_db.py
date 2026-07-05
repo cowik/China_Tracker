@@ -76,6 +76,10 @@ def write_df(tab_name: str, df: pd.DataFrame) -> None:
     headers = list(df.columns) if not df.empty else SHEET_SCHEMAS.get(tab_name, [])
     ws.append_row(headers)
     if not df.empty:
+        # --- FIX: convert any datetime/date columns to strings ---
+        df = df.copy()
+        for col in df.select_dtypes(include=['datetime64', 'datetime', 'date']).columns:
+            df[col] = df[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
         # Convert everything to plain strings/numbers gspread can serialize
         rows = df.astype(object).where(pd.notnull(df), "").values.tolist()
         ws.append_rows(rows, value_input_option="USER_ENTERED")
