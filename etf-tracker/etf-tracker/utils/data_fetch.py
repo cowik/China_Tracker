@@ -1,13 +1,21 @@
 """
 Data fetching: 
-- Stocks: BaoStock primary, efinance fallback, yfinance last
 - ETFs: efinance primary, yfinance fallback, BaoStock last
+- Stocks: BaoStock primary, efinance fallback, yfinance last
 """
 from __future__ import annotations
 import pandas as pd
 import streamlit as st
 import time
 import random
+
+# Try to import efinance; if not available, fall back
+try:
+    import efinance as ef
+    EFINANCE_AVAILABLE = True
+except ImportError:
+    EFINANCE_AVAILABLE = False
+    st.warning("efinance not installed – falling back to other sources.")
 
 
 def _clean_ticker(ticker: str) -> str:
@@ -43,7 +51,8 @@ def _to_yfinance_ticker(ticker: str) -> str:
 
 def _retry_download_efinance(ticker: str, start_date: str, end_date: str, retries=3):
     """Fetch daily data using efinance (Eastmoney)."""
-    import efinance as ef
+    if not EFINANCE_AVAILABLE:
+        return pd.DataFrame()
     for attempt in range(retries):
         try:
             df = ef.stock.get_quote_history(
@@ -129,54 +138,12 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3):
     return pd.DataFrame()
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_stock_hist(ticker: str, start_date: str = "1990-01-01", end_date: str = "2050-01-01") -> pd.DataFrame:
-    """Fetch daily data: for stocks use BaoStock first; for ETFs use efinance first."""
-    # Determine if it's likely an ETF (starts with 1, 5, 6? Actually ETF codes can be 1, 5, but we use asset_type)
-    # We don't have asset_type here, so we'll try efinance first always? But we can't know.
-    # We'll use a heuristic: if ticker starts with 1 or 5? Actually ETFs can be 15xxxx, 51xxxx, 58xxxx, etc.
-    # Safer: try efinance first, if it fails, try baostock.
-    # But we want to prioritize BaoStock for stocks. The caller can specify asset_type.
-    # For now, we'll try both and return the best: efinance often has full history for ETFs, BaoStock for stocks.
-    # We'll call both and compare length? Or just try efinance first, then baostock, then yfinance.
-    # Since the user is having issue with ETF 159995, we'll try efinance first globally.
-    # But for stocks, BaoStock is better. We'll handle in get_price_series with asset_type.
-    # We'll just implement a generic approach: try efinance, then baostock, then yfinance.
-    # This works for both.
-    df = _retry_download_efinance(ticker, start_date, end_date)
-    if not df.empty:
-        return df
-
-    # If efinance fails, try BaoStock
-    bs_ticker = _to_baostock_ticker(ticker)
-    df = _retry_download_baostock(bs_ticker, start_date, end_date)
-    if not df.empty:
-        return df
-
-    # Finally yfinance
-    yf_ticker = _to_yfinance_ticker(ticker)
-    try:
-        df = _retry_download_yfinance(yf_ticker, start_date, end_date)
-        if not df.empty:
-            return df
-    except Exception as e:
-        st.warning(f"yfinance fallback failed for {ticker}: {e}")
-
-    st.warning(f"No data found for {ticker} (tried efinance, baostock, yfinance)")
-    return pd.DataFrame()
-
-
-def get_etf_hist(ticker: str, start_date: str = "1990-01-01", end_date: str = "2050-01-01") -> pd.DataFrame:
-    # For ETFs, we explicitly call the same function; it already tries efinance first.
-    return get_stock_hist(ticker, start_date, end_date)
-
-
 def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "1990-01-01") -> pd.Series:
     """
     Returns date-indexed close price series.
     asset_type is used to prioritize data source:
     - 'stock': try BaoStock first, then efinance, then yfinance
-    - 'etf': try efinance first, then yfinance, then Baostock
+    - 'etf': try efinance first, then yfinance, then BaoStock
     """
     ticker = _clean_ticker(ticker)
     df = pd.DataFrame()
@@ -232,6 +199,21 @@ def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "
     # If all failed
     st.warning(f"❌ No data for {ticker} (asset_type={asset_type})")
     return pd.Series(dtype=float)
+
+
+# For backward compatibility with existing code
+def get_stock_hist(ticker: str, start_date: str = "1990-01-01", end_date: str = "2050-01-01") -> pd.DataFrame:
+    df = get_price_series(ticker, asset_type="stock", start_date=start_date)
+    if df.empty:
+        return pd.DataFrame()
+    return df.reset_index().rename(columns={"index": "date"})
+
+
+def get_etf_hist(ticker: str, start_date: str = "1990-01-01", end_date: str = "2050-01-01") -> pd.DataFrame:
+    df = get_price_series(ticker, asset_type="etf", start_date=start_date)
+    if df.empty:
+        return pd.DataFrame()
+    return df.reset_index().rename(columns={"index": "date"})
 
 
 def get_dividends(ticker: str, asset_type: str) -> pd.DataFrame:
