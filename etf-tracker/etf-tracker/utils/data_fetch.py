@@ -1,7 +1,7 @@
 """
-Data fetching:
-- Stocks: Cache last 3 years from BaoStock, fetch up to last trading day only.
-- ETFs: Direct fetch from yfinance each time (no cache).
+Data fetching with simple cache for stocks (last 3 years), ETFs direct from yfinance.
+- Stocks: cache only last 3 years, fetch up to last trading day.
+- ETFs: direct fetch (no cache).
 - Leading zeros preserved.
 """
 from __future__ import annotations
@@ -48,34 +48,49 @@ def _to_yfinance_ticker(ticker: str) -> str:
 
 
 def _get_last_trading_day() -> str:
-    """Get the most recent trading day (from baostock)."""
+    """Get the most recent actual trading day from baostock (last 30 days)."""
     import baostock as bs
     today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+    start = (datetime.now(BEIJING_TZ) - timedelta(days=30)).strftime("%Y-%m-%d")
     try:
         lg = bs.login()
         if lg is None or lg.error_code != '0':
-            return today
-        rs = bs.query_trade_dates(start_date=today, end_date=today)
+            # Fallback: use yesterday if weekend
+            return _fallback_last_business_day()
+        rs = bs.query_trade_dates(start_date=start, end_date=today)
         if rs.error_code != '0':
             bs.logout()
-            return today
-        # Check if today is a trading day
+            return _fallback_last_business_day()
         trading_days = []
         while rs.next():
             row = rs.get_row_data()
             if row and len(row) > 0:
                 trading_days.append(row[0])
         bs.logout()
-        if today in trading_days:
-            return today
-        # If not, go back up to 7 days
-        for i in range(1, 8):
-            check = (datetime.now(BEIJING_TZ) - timedelta(days=i)).strftime("%Y-%m-%d")
-            if check in trading_days:
-                return check
-        return today
+        if not trading_days:
+            return _fallback_last_business_day()
+        # Return the most recent trading day
+        return max(trading_days)
     except Exception:
-        return today
+        return _fallback_last_business_day()
+
+
+def _fallback_last_business_day() -> str:
+    """Fallback: return yesterday if weekday, else last Friday."""
+    dt = datetime.now(BEIJING_TZ)
+    # If today is Saturday (5) or Sunday (6), go back to Friday
+    if dt.weekday() == 5:   # Saturday
+        dt = dt - timedelta(days=1)
+    elif dt.weekday() == 6: # Sunday
+        dt = dt - timedelta(days=2)
+    # If today is Monday, we might want Friday, but we'll just use yesterday if weekday
+    # Actually, we want the last business day, so if today is Monday, Friday is 3 days ago.
+    if dt.weekday() == 0:  # Monday
+        dt = dt - timedelta(days=3)
+    # More robust: just go back until we hit weekday 0-4
+    while dt.weekday() > 4:
+        dt = dt - timedelta(days=1)
+    return dt.strftime("%Y-%m-%d")
 
 
 def _retry_download_baostock(ticker: str, start_date: str, end_date: str, adjustflag='2', retries=3):
@@ -136,7 +151,6 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3):
 # ---- Cache functions for stocks only ----
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_price_cache() -> pd.DataFrame:
-    """Read the entire price_cache sheet."""
     return sheets_db.read_df("price_cache")
 
 
@@ -167,22 +181,28 @@ def _update_cache(ticker: str, new_data: pd.DataFrame) -> None:
 
 
 def _trim_cache_to_3_years(ticker: str) -> None:
-    """Remove stock data older than 3 years for this ticker."""
+    """Remove stock data older than 3 years for this ticker, but never delete everything."""
     df = _load_price_cache()
     if df.empty:
         return
     mask = df["ticker"].astype(str).str.strip() == ticker
     if not mask.any():
         return
-    # Keep only last 3 years
     cutoff = (datetime.now() - timedelta(days=3*365)).strftime("%Y-%m-%d")
+    # Keep only recent data for this ticker
     df_ticker = df[mask].copy()
     df_ticker["date_dt"] = pd.to_datetime(df_ticker["date"])
     df_ticker = df_ticker[df_ticker["date_dt"] >= cutoff]
+    # If after trimming the ticker has no rows, we should keep at least one row to avoid deletion?
+    # But we want to keep the ticker? Actually, we want to keep the most recent data.
+    # If all data is older than 3 years, we keep it anyway (but that's unlikely).
+    # To be safe, if df_ticker is empty, we keep the original (do nothing).
+    if df_ticker.empty:
+        return
+    # Remove old rows and add back the kept ones
     df = df[~mask]
-    if not df_ticker.empty:
-        df_ticker = df_ticker.drop(columns=["date_dt"])
-        df = pd.concat([df, df_ticker], ignore_index=True)
+    df_ticker = df_ticker.drop(columns=["date_dt"])
+    df = pd.concat([df, df_ticker], ignore_index=True)
     sheets_db.write_df("price_cache", df)
     st.cache_data.clear()
 
@@ -191,26 +211,21 @@ def _trim_cache_to_3_years(ticker: str) -> None:
 def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "1990-01-01") -> pd.Series:
     ticker = _clean_ticker(ticker)
     last_trading_day = _get_last_trading_day()
-    today_beijing = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
 
     if asset_type == 'stock':
         # ---- Stock: Use cache ----
         cached_series = _get_cached_series(ticker)
-        
-        # Determine fetch range: from 3 years ago to last trading day
         three_years_ago = (datetime.now() - timedelta(days=3*365)).strftime("%Y-%m-%d")
-        
+        # Determine fetch range: from max(three_years_ago, last_cached+1) to last_trading_day
         if not cached_series.empty:
             last_cached = cached_series.index.max().strftime("%Y-%m-%d")
             # Start from the day after last cached, but not earlier than 3 years ago
-            start_fetch = max(last_cached, three_years_ago)
-            # Convert to date and add 1 day
-            start_dt = datetime.strptime(start_fetch, "%Y-%m-%d") + timedelta(days=1)
-            start_fetch = start_dt.strftime("%Y-%m-%d")
+            start_fetch_dt = max(pd.Timestamp(last_cached), pd.Timestamp(three_years_ago)) + timedelta(days=1)
+            start_fetch = start_fetch_dt.strftime("%Y-%m-%d")
         else:
             start_fetch = three_years_ago
         
-        # Only fetch if start <= last trading day
+        # If start_fetch <= last_trading_day, fetch new data
         if start_fetch <= last_trading_day:
             st.info(f"📡 Fetching stock data for {ticker} from {start_fetch} to {last_trading_day}")
             new_df = _retry_download_baostock(_to_baostock_ticker(ticker), start_fetch, last_trading_day)
@@ -219,7 +234,7 @@ def get_price_series(ticker: str, asset_type: str = "stock", start_date: str = "
                 st.cache_data.clear()
                 cached_series = _get_cached_series(ticker)
         
-        # Trim cache to 3 years
+        # Trim cache to 3 years (safe)
         _trim_cache_to_3_years(ticker)
         st.cache_data.clear()
         cached_series = _get_cached_series(ticker)
