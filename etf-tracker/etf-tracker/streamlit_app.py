@@ -46,7 +46,7 @@ def load_backtest(portfolio_label: str) -> pd.Series:
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=21600, show_spinner=False)
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
     price_data = {}
     for h in holdings:
