@@ -107,10 +107,16 @@ def _get_last_trading_day() -> str:
 
 # ------------------------------------------------------------ raw fetchers --
 def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) -> pd.DataFrame:
+    # yfinance uses EXCLUSIVE end dates. We must add 1 day to actually get the "end" day.
+    try:
+        end_date_exclusive = (pd.Timestamp(end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    except Exception:
+        end_date_exclusive = end
+        
     for attempt in range(retries):
         try:
             df = yf.download(
-                ticker_yf, start=start, end=end,
+                ticker_yf, start=start, end=end_date_exclusive,
                 progress=False, timeout=15,
                 auto_adjust=True,
             )
@@ -220,7 +226,7 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
     return results
 
 # --------------------------------------------------------------- batch watchlist --
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
     if watchlist_df.empty:
         return {}
@@ -272,8 +278,11 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
         
     if missing_yf_tickers:
         try:
+            # yfinance uses EXCLUSIVE end dates. Add 1 day.
+            end_date_exclusive = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            
             data = yf.download(
-                missing_yf_tickers, start=start_date, end=end_date,
+                missing_yf_tickers, start=start_date, end=end_date_exclusive,
                 progress=False, timeout=30, group_by='ticker',
                 auto_adjust=True,
             )
@@ -285,9 +294,14 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
                 label = missing_labels[i]
                 ticker = missing_tickers[i]
                 
-                if yf_t not in data.columns.levels[0]:
-                    continue
-                sub = data[yf_t]
+                # Handle both single and multi-index columns safely
+                if isinstance(data.columns, pd.MultiIndex):
+                    if yf_t not in data.columns.get_level_values(0):
+                        continue
+                    sub = data[yf_t]
+                else:
+                    sub = data
+                    
                 if 'Adj Close' in sub.columns:
                     close = sub['Adj Close']
                 elif 'Close' in sub.columns:
