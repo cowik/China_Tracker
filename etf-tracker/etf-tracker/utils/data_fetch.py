@@ -64,13 +64,22 @@ def _to_yfinance_ticker(ticker: str) -> str:
         return ticker
     return f"{ticker}.SS" if ticker[0] in ("5", "6") else f"{ticker}.SZ"
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _get_last_trading_day() -> str:
-    """Cached — only computed once per 30 minutes, not once per ticker."""
+    """Cached — only computed once per 5 minutes."""
+    now_beijing = _now_beijing()
+    
+    # BaoStock delay: Daily closing data isn't available until ~17:30 Beijing time.
+    # If it's before 17:30, we must look for the *previous* trading day.
+    cutoff_time = now_beijing.replace(hour=17, minute=30, second=0, microsecond=0)
+    if now_beijing < cutoff_time:
+        now_beijing -= timedelta(days=1)
+        
+    today = now_beijing.strftime("%Y-%m-%d")
+    start = (now_beijing - timedelta(days=10)).strftime("%Y-%m-%d")
+    
     try:
         import baostock as bs
-        today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
-        start = (datetime.now(BEIJING_TZ) - timedelta(days=10)).strftime("%Y-%m-%d")
         lg = bs.login()
         if lg is not None and lg.error_code == '0':
             rs = bs.query_trade_dates(start_date=start, end_date=today)
@@ -78,14 +87,20 @@ def _get_last_trading_day() -> str:
                 trading_days = []
                 while rs.next():
                     row = rs.get_row_data()
-                    if row and len(row) > 0:
+                    # BaoStock returns [date, is_trading_day]. 
+                    # We must check if is_trading_day == "1" to skip holidays/weekends!
+                    if row and len(row) >= 2 and row[1] == "1":
                         trading_days.append(row[0])
                 bs.logout()
                 if trading_days:
                     return max(trading_days)
     except Exception:
         pass
-    dt = datetime.now(BEIJING_TZ)
+        
+    # Fallback: just step back over weekends if API fails
+    dt = _now_beijing()
+    if dt.hour < 17:
+        dt -= timedelta(days=1)
     while dt.weekday() > 4:
         dt -= timedelta(days=1)
     return dt.strftime("%Y-%m-%d")
