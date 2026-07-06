@@ -85,7 +85,6 @@ def positions_editor(tab_name: str, label: str):
     else:
         st.caption("No positions yet – add rows below using the editor.")
 
-    # Data editor (always shown)
     edited = st.data_editor(
         df[list(POSITION_COLS.keys())],
         column_config=POSITION_COLS,
@@ -102,7 +101,6 @@ def positions_editor(tab_name: str, label: str):
         st.success("Saved.")
         st.rerun()
 
-    # Rebalance button (only if positions exist)
     if not df.empty:
         st.divider()
         st.subheader("⚖️ Rebalance (save live performance to backtest)")
@@ -172,7 +170,6 @@ def load_backtest(portfolio_label: str) -> pd.Series:
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 
-# ----- Main sections -----
 if section in SECTION_TAB_MAP:
     tab_name = SECTION_TAB_MAP[section]
     label = section
