@@ -81,10 +81,14 @@ def load_backtest(portfolio_label: str) -> pd.Series:
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
     price_data = {}
     for h in holdings:
+        # NOTE: force_refresh=True previously made this re-download each
+        # holding's ENTIRE price history through BaoStock on every cache
+        # refresh (the main cause of the multi-minute cold start).
+        # get_price_series() now always fetches incrementally on its own,
+        # so no flag is needed here.
         price_data[h["ticker"]] = data_fetch.get_price_series(
             h["ticker"], h["asset_type"],
             start_date=h["inception_date"].strftime("%Y-%m-%d"),
-            force_refresh=True
         )
 
     backtest_index_values = load_backtest(portfolio_label)
@@ -143,60 +147,75 @@ if not series_options:
     )
     st.stop()
 
-# --- Chart ---
-st.subheader("Performance chart")
-choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
-chart_series = series_options[choice].dropna()
+# --- Chart + comparison table ---
+# Wrapped in @st.fragment: Streamlit normally reruns the ENTIRE script
+# top-to-bottom on every widget interaction, including the whole
+# `with st.spinner("Loading your data...")` block above (reading every
+# Sheet tab, recomputing both portfolio indices, re-fetching the
+# watchlist). That's true even though those calls are individually
+# cached - the script still re-executes every one of them, re-hashes
+# their arguments, and re-deserializes their cached return values, which
+# is exactly the "switching graphs takes 2-3 seconds" symptom. A fragment
+# scopes the rerun to just this function: changing the dropdown below now
+# only re-runs this chart/table code, and the data-loading block above it
+# does not execute again at all.
+@st.fragment
+def render_dashboard(series_options: dict):
+    st.subheader("Performance chart")
+    choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
+    chart_series = series_options[choice].dropna()
 
-if chart_series.empty:
-    st.warning("No price data available yet for this selection.")
-else:
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=chart_series.index, y=(chart_series - 1) * 100,
-        mode="lines", name=choice, line=dict(width=2),
-    ))
-    fig.update_layout(
-        yaxis_title="Total return (%)",
-        margin=dict(l=10, r=10, t=30, b=10),
-        height=450,
-    )
-    fig.update_xaxes(
-        rangeselector=dict(buttons=[
-            dict(count=5, label="5D", step="day", stepmode="backward"),
-            dict(count=1, label="1M", step="month", stepmode="backward"),
-            dict(count=3, label="3M", step="month", stepmode="backward"),
-            dict(count=6, label="6M", step="month", stepmode="backward"),
-            dict(step="year", stepmode="todate", label="YTD"),
-            dict(count=1, label="1Y", step="year", stepmode="backward"),
-            dict(count=3, label="3Y", step="year", stepmode="backward"),
-            dict(count=5, label="5Y", step="year", stepmode="backward"),
-            dict(step="all", label="Max"),
-        ]),
-        rangeslider=dict(visible=False),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    if chart_series.empty:
+        st.warning("No price data available yet for this selection.")
+    else:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=chart_series.index, y=(chart_series - 1) * 100,
+            mode="lines", name=choice, line=dict(width=2),
+        ))
+        fig.update_layout(
+            yaxis_title="Total return (%)",
+            margin=dict(l=10, r=10, t=30, b=10),
+            height=450,
+        )
+        fig.update_xaxes(
+            rangeselector=dict(buttons=[
+                dict(count=5, label="5D", step="day", stepmode="backward"),
+                dict(count=1, label="1M", step="month", stepmode="backward"),
+                dict(count=3, label="3M", step="month", stepmode="backward"),
+                dict(count=6, label="6M", step="month", stepmode="backward"),
+                dict(step="year", stepmode="todate", label="YTD"),
+                dict(count=1, label="1Y", step="year", stepmode="backward"),
+                dict(count=3, label="3Y", step="year", stepmode="backward"),
+                dict(count=5, label="5Y", step="year", stepmode="backward"),
+                dict(step="all", label="Max"),
+            ]),
+            rangeslider=dict(visible=False),
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-# --- Comparison table ---
-st.subheader("Comparison table")
-today = pd.Timestamp(date.today())
-rows = []
-for label, s in series_options.items():
-    if s.dropna().empty:
-        continue
-    row = returns.comparison_row(s, today)
-    row["Name"] = label
-    rows.append(row)
+    st.subheader("Comparison table")
+    today = pd.Timestamp(date.today())
+    rows = []
+    for label, s in series_options.items():
+        if s.dropna().empty:
+            continue
+        row = returns.comparison_row(s, today)
+        row["Name"] = label
+        rows.append(row)
 
-if rows:
-    table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "1Y"]]
+    if rows:
+        table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "1Y"]]
 
-    def color_pct(v):
-        if pd.isna(v):
-            return ""
-        return f"color: {'#0a7a2f' if v >= 0 else '#c02020'}"
+        def color_pct(v):
+            if pd.isna(v):
+                return ""
+            return f"color: {'#0a7a2f' if v >= 0 else '#c02020'}"
 
-    styled = table_df.style.format("{:+.2f}%", na_rep="—").map(color_pct)
-    st.dataframe(styled, use_container_width=True)
-else:
-    st.info("Not enough data yet to build the comparison table.")
+        styled = table_df.style.format("{:+.2f}%", na_rep="—").map(color_pct)
+        st.dataframe(styled, use_container_width=True)
+    else:
+        st.info("Not enough data yet to build the comparison table.")
+
+
+render_dashboard(series_options)
