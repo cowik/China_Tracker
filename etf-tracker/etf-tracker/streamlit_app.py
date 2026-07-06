@@ -18,7 +18,7 @@ st.markdown(
     <style>
         .block-container {
             padding-top: 2.5rem !important;
-            padding-bottom: 5rem !important; /* Adds space at the bottom so the table isn't hidden */
+            padding-bottom: 5rem !important;
         }
         h1 {
             margin-top: 0rem !important;
@@ -32,9 +32,29 @@ st.markdown(
             margin-top: 0.5rem !important;
             margin-bottom: 0.25rem !important;
         }
-        /* Push the Streamlit footer down so it doesn't overlap the table */
         footer {
             margin-bottom: 2rem;
+        }
+        
+        /* --- MOBILE TABLE FIXES --- */
+        /* Allow the table container to scroll horizontally if needed */
+        [data-testid="stDataFrame"] {
+            max-width: 100% !important;
+            overflow-x: auto !important;
+        }
+        /* Force long Russian portfolio names to wrap to the next line */
+        [data-testid="stDataFrame"] th, 
+        [data-testid="stDataFrame"] td {
+            word-break: break-word !important;
+            white-space: normal !important;
+            min-width: 50px !important;
+        }
+        /* Reduce side padding on mobile screens to maximize width */
+        @media (max-width: 768px) {
+            .block-container {
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+            }
         }
     </style>
     """,
