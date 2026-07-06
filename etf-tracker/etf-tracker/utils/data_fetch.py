@@ -137,6 +137,10 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
             out = close.reset_index()
             out.columns = ["date", "close"]
             out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None)
+            
+            # --- ADD THIS LINE: Filter out intraday data to sync with 17:30 BaoStock rule ---
+            out = out[out["date"].dt.normalize() <= pd.Timestamp(end)]
+            
             return out
         except Exception:
             if attempt < retries - 1:
@@ -311,11 +315,15 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
                     
                 close = close.dropna()
                 if not close.empty:
-                    results[label] = close / close.iloc[0]
-                    if close.index.tz is not None:
-                        close.index = close.index.tz_localize(None)
-                    for dt, price in close.items():
-                        rows_to_write.append((ticker, 'etf', dt.strftime("%Y-%m-%d"), float(price)))
+                    # --- ADD THIS LINE: Filter out intraday data to sync with 17:30 BaoStock rule ---
+                    close = close[close.index.normalize() <= pd.Timestamp(end_date)]
+                    
+                    if not close.empty:
+                        results[label] = close / close.iloc[0]
+                        if close.index.tz is not None:
+                            close.index = close.index.tz_localize(None)
+                        for dt, price in close.items():
+                            rows_to_write.append((ticker, 'etf', dt.strftime("%Y-%m-%d"), float(price)))
                         
             if rows_to_write:
                 conn.executemany(
