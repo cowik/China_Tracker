@@ -215,22 +215,6 @@ def render_dashboard(series_options: dict):
                 height=450,
             )
             
-            # Optional: We keep the native Plotly buttons as well. 
-            # They will now act as a secondary zoom on top of the rebased view.
-            fig.update_xaxes(
-                rangeselector=dict(buttons=[
-                    dict(count=5, label="5D", step="day", stepmode="backward"),
-                    dict(count=1, label="1M", step="month", stepmode="backward"),
-                    dict(count=3, label="3M", step="month", stepmode="backward"),
-                    dict(count=6, label="6M", step="month", stepmode="backward"),
-                    dict(step="year", stepmode="todate", label="YTD"),
-                    dict(count=1, label="1Y", step="year", stepmode="backward"),
-                    dict(count=3, label="3Y", step="year", stepmode="backward"),
-                    dict(count=5, label="5Y", step="year", stepmode="backward"),
-                    dict(step="all", label="Max"),
-                ]),
-                rangeslider=dict(visible=False),
-            )
             st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Comparison table")
