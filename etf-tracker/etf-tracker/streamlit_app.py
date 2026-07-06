@@ -79,7 +79,7 @@ def load_backtest(portfolio_label: str) -> pd.Series:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
-    # FIX: Removed force_refresh=True. Uses batch fetching which only fetches missing days.
+    # FIX: Uses batch fetching which opens a single API session for all tickers
     price_data = data_fetch.get_prices_batch(holdings)
 
     backtest_index_values = load_backtest(portfolio_label)
@@ -138,11 +138,14 @@ if not series_options:
     )
     st.stop()
 
-
-# FIX: Isolate chart and table in a fragment so changing the selectbox 
-# doesn't rerun the whole page or refetch data.
+# --- Chart + comparison table ---
+# Wrapped in @st.fragment: Streamlit normally reruns the ENTIRE script
+# top-to-bottom on every widget interaction. A fragment scopes the rerun 
+# to just this function: changing the dropdown below now only re-runs 
+# this chart/table code, and the data-loading block above it does not 
+# execute again at all.
 @st.fragment
-def render_chart_and_table(series_options: dict):
+def render_dashboard(series_options: dict):
     st.subheader("Performance chart")
     choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
     chart_series = series_options[choice].dropna()
@@ -176,7 +179,6 @@ def render_chart_and_table(series_options: dict):
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- Comparison table ---
     st.subheader("Comparison table")
     today = pd.Timestamp(date.today())
     rows = []
@@ -200,4 +202,5 @@ def render_chart_and_table(series_options: dict):
     else:
         st.info("Not enough data yet to build the comparison table.")
 
-render_chart_and_table(series_options)
+
+render_dashboard(series_options)
