@@ -97,7 +97,6 @@ def positions_editor(tab_name: str, label: str):
     if st.button("Save changes", key=f"save_{tab_name}"):
         clean = edited.dropna(subset=["ticker"]).copy()
         clean["ticker"] = clean["ticker"].astype(str).str.strip()
-        # No explicit date conversion – write_df handles it
         sheets_db.write_df(tab_name, clean)
         sheets_db.clear_caches()
         st.success("Saved.")
@@ -128,10 +127,9 @@ def positions_editor(tab_name: str, label: str):
             if not holdings:
                 st.warning("No valid positions to rebalance.")
             else:
-                price_data = {}
-                for h in holdings:
-                    price_data[h["ticker"]] = data_fetch.get_price_series(h["ticker"], h["asset_type"])
-
+                # FIX: Use batch fetching to avoid multiple API logins
+                price_data = data_fetch.get_prices_batch(holdings)
+                
                 backtest_index_values = load_backtest(label)
                 rebalance_freq = sheets_db.get_rebalance_frequency(label)
                 live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
