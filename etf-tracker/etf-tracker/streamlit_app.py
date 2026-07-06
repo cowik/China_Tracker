@@ -18,7 +18,7 @@ st.markdown(
     <style>
         .block-container {
             padding-top: 2.5rem !important;
-            padding-bottom: 0rem !important;
+            padding-bottom: 5rem !important; /* Adds space at the bottom so the table isn't hidden */
         }
         h1 {
             margin-top: 0rem !important;
@@ -31,6 +31,10 @@ st.markdown(
         h2, h3 {
             margin-top: 0.5rem !important;
             margin-bottom: 0.25rem !important;
+        }
+        /* Push the Streamlit footer down so it doesn't overlap the table */
+        footer {
+            margin-bottom: 2rem;
         }
     </style>
     """,
