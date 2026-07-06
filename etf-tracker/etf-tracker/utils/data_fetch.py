@@ -64,9 +64,9 @@ def _to_yfinance_ticker(ticker: str) -> str:
         return ticker
     return f"{ticker}.SS" if ticker[0] in ("5", "6") else f"{ticker}.SZ"
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _get_last_trading_day() -> str:
-    """Cached — only computed once per hour, not once per ticker."""
+    """Cached — only computed once per 30 minutes, not once per ticker."""
     try:
         import baostock as bs
         today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
@@ -102,7 +102,7 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
             if df.empty:
                 return pd.DataFrame()
             
-            # Handle yfinance MultiIndex columns
+            # Handle yfinance MultiIndex columns (fixes KeyError crash)
             if isinstance(df.columns, pd.MultiIndex):
                 if "Adj Close" in df.columns.get_level_values(0):
                     close = df["Adj Close"].iloc[:, 0]
@@ -247,7 +247,6 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
             s = df_cache.sort_values("date").set_index("date")["close"]
             if not s.empty:
                 max_date = s.index.max()
-                # Use cache if it's within 4 days of today
                 if max_date >= pd.Timestamp(end_date) - pd.Timedelta(days=4):
                     results[labels[i]] = s / s.iloc[0]
                     continue
@@ -284,7 +283,6 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
                 close = close.dropna()
                 if not close.empty:
                     results[label] = close / close.iloc[0]
-                    # Ensure index is tz-naive for SQLite storage
                     if close.index.tz is not None:
                         close.index = close.index.tz_localize(None)
                     for dt, price in close.items():
@@ -311,7 +309,6 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     """
     conn = _get_db_conn()
     
-    # Load all cached prices from SQLite in one go
     tickers = [_clean_ticker(h["ticker"]) for h in holdings]
     if not tickers:
         return {}
@@ -352,10 +349,8 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     if not missing_requests:
         return results
         
-    # Batch fetch using a single baostock/yfinance session
     fetched_data = _fetch_missing_data_batch(missing_requests)
     
-    # Batch write to SQLite
     rows_to_write = []
     for ticker, asset_type, _, _ in missing_requests:
         if ticker in fetched_data and not fetched_data[ticker].empty:
@@ -374,7 +369,6 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
         )
         conn.commit()
         
-    # Reload from SQLite to get the clean, merged state
     df_cache = pd.read_sql(
         f"SELECT ticker, asset_type, date, close FROM price_cache WHERE ticker IN ({placeholders})",
         conn, params=tickers
