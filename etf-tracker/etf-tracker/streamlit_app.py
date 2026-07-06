@@ -37,17 +37,17 @@ st.markdown(
         }
         
         /* --- MOBILE TABLE FIXES --- */
-        /* Allow the table container to scroll horizontally if needed */
+        /* Force table to fit exactly within container width, NO scrollbar */
         [data-testid="stDataFrame"] {
             max-width: 100% !important;
-            overflow-x: auto !important;
+            overflow: hidden !important; 
         }
         /* Force long Russian portfolio names to wrap to the next line */
         [data-testid="stDataFrame"] th, 
         [data-testid="stDataFrame"] td {
             word-break: break-word !important;
             white-space: normal !important;
-            min-width: 50px !important;
+            min-width: 40px !important; /* Keeps columns narrow enough to fit */
         }
         /* Reduce side padding on mobile screens to maximize width */
         @media (max-width: 768px) {
@@ -238,14 +238,19 @@ def render_dashboard(series_options: dict):
                 margin=dict(l=10, r=10, t=30, b=10),
                 height=450,
                 dragmode=False, # Disables dragging/panning on the chart
+                hovermode="x",  # Shows hover info for the closest x point
             )
+            
+            # Add horizontal and vertical spike lines on hover
+            fig.update_xaxes(showspikes=True, spikethickness=1, spikecolor="gray", spikemode="across")
+            fig.update_yaxes(showspikes=True, spikethickness=1, spikecolor="gray", spikemode="across")
             
             # Configuration to lock the chart down for mobile
             plotly_config = {
-                'displayModeBar': False, # Hides the Plotly hover toolbar
+                'displayModeBar': False,
                 'displaylogo': False,
-                'scrollZoom': False,     # Prevents scroll wheel/touch zoom
-                'doubleClick': 'reset',  # Prevents double tap zoom glitches
+                'scrollZoom': False,     
+                'doubleClick': 'reset',  
             }
             
             st.plotly_chart(fig, use_container_width=True, config=plotly_config)
