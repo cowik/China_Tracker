@@ -9,19 +9,19 @@ from utils import sheets_db, data_fetch, returns
 st.set_page_config(
     page_title="China Portfolio & ETF Tracker",
     layout="wide",
-    initial_sidebar_state="collapsed",  # sidebar closed by default
+    initial_sidebar_state="collapsed",
 )
 
-# ----- Custom CSS to adjust spacing (title lower) -----
+# ----- Custom CSS -----
 st.markdown(
     """
     <style>
         .block-container {
-            padding-top: 2.5rem !important;   /* increased from 1rem to lower content */
+            padding-top: 2.5rem !important;
             padding-bottom: 0rem !important;
         }
         h1 {
-            margin-top: 0rem !important;      /* no negative margin */
+            margin-top: 0rem !important;
             margin-bottom: 0.25rem !important;
         }
         .stCaption {
@@ -79,17 +79,8 @@ def load_backtest(portfolio_label: str) -> pd.Series:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
-    price_data = {}
-    for h in holdings:
-        # NOTE: force_refresh=True previously made this re-download each
-        # holding's ENTIRE price history through BaoStock on every cache
-        # refresh (the main cause of the multi-minute cold start).
-        # get_price_series() now always fetches incrementally on its own,
-        # so no flag is needed here.
-        price_data[h["ticker"]] = data_fetch.get_price_series(
-            h["ticker"], h["asset_type"],
-            start_date=h["inception_date"].strftime("%Y-%m-%d"),
-        )
+    # FIX: Removed force_refresh=True. Uses batch fetching which only fetches missing days.
+    price_data = data_fetch.get_prices_batch(holdings)
 
     backtest_index_values = load_backtest(portfolio_label)
     rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
@@ -147,20 +138,11 @@ if not series_options:
     )
     st.stop()
 
-# --- Chart + comparison table ---
-# Wrapped in @st.fragment: Streamlit normally reruns the ENTIRE script
-# top-to-bottom on every widget interaction, including the whole
-# `with st.spinner("Loading your data...")` block above (reading every
-# Sheet tab, recomputing both portfolio indices, re-fetching the
-# watchlist). That's true even though those calls are individually
-# cached - the script still re-executes every one of them, re-hashes
-# their arguments, and re-deserializes their cached return values, which
-# is exactly the "switching graphs takes 2-3 seconds" symptom. A fragment
-# scopes the rerun to just this function: changing the dropdown below now
-# only re-runs this chart/table code, and the data-loading block above it
-# does not execute again at all.
+
+# FIX: Isolate chart and table in a fragment so changing the selectbox 
+# doesn't rerun the whole page or refetch data.
 @st.fragment
-def render_dashboard(series_options: dict):
+def render_chart_and_table(series_options: dict):
     st.subheader("Performance chart")
     choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
     chart_series = series_options[choice].dropna()
@@ -194,6 +176,7 @@ def render_dashboard(series_options: dict):
         )
         st.plotly_chart(fig, use_container_width=True)
 
+    # --- Comparison table ---
     st.subheader("Comparison table")
     today = pd.Timestamp(date.today())
     rows = []
@@ -217,5 +200,4 @@ def render_dashboard(series_options: dict):
     else:
         st.info("Not enough data yet to build the comparison table.")
 
-
-render_dashboard(series_options)
+render_chart_and_table(series_options)
