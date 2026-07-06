@@ -147,37 +147,91 @@ if not series_options:
 @st.fragment
 def render_dashboard(series_options: dict):
     st.subheader("Performance chart")
-    choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
-    chart_series = series_options[choice].dropna()
+    
+    # Use columns to put the dropdown and the time period selector side-by-side
+    col1, col2 = st.columns([3, 2])
+    with col1:
+        choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
+    with col2:
+        # Native Streamlit selector for time periods.
+        # This forces a Python rerun, recalculating and rescaling the Y-axis perfectly.
+        period = st.radio(
+            "Period",
+            options=["5D", "1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "Max"],
+            index=8,  # Default to "Max"
+            horizontal=True,
+            key="period_selector"
+        )
 
-    if chart_series.empty:
+    chart_series = series_options.get(choice)
+    
+    if chart_series is None or chart_series.dropna().empty:
         st.warning("No price data available yet for this selection.")
     else:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=chart_series.index, y=(chart_series - 1) * 100,
-            mode="lines", name=choice, line=dict(width=2),
-        ))
-        fig.update_layout(
-            yaxis_title="Total return (%)",
-            margin=dict(l=10, r=10, t=30, b=10),
-            height=450,
-        )
-        fig.update_xaxes(
-            rangeselector=dict(buttons=[
-                dict(count=5, label="5D", step="day", stepmode="backward"),
-                dict(count=1, label="1M", step="month", stepmode="backward"),
-                dict(count=3, label="3M", step="month", stepmode="backward"),
-                dict(count=6, label="6M", step="month", stepmode="backward"),
-                dict(step="year", stepmode="todate", label="YTD"),
-                dict(count=1, label="1Y", step="year", stepmode="backward"),
-                dict(count=3, label="3Y", step="year", stepmode="backward"),
-                dict(count=5, label="5Y", step="year", stepmode="backward"),
-                dict(step="all", label="Max"),
-            ]),
-            rangeslider=dict(visible=False),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        chart_series = chart_series.dropna()
+        
+        # Determine the start date based on the selected period
+        last_date = chart_series.index.max()
+        
+        if period == "5D":
+            start_date = last_date - pd.Timedelta(days=5)
+        elif period == "1M":
+            start_date = last_date - pd.DateOffset(months=1)
+        elif period == "3M":
+            start_date = last_date - pd.DateOffset(months=3)
+        elif period == "6M":
+            start_date = last_date - pd.DateOffset(months=6)
+        elif period == "YTD":
+            start_date = pd.Timestamp(year=last_date.year, month=1, day=1)
+        elif period == "1Y":
+            start_date = last_date - pd.DateOffset(years=1)
+        elif period == "3Y":
+            start_date = last_date - pd.DateOffset(years=3)
+        elif period == "5Y":
+            start_date = last_date - pd.DateOffset(years=5)
+        else:  # Max
+            start_date = chart_series.index.min()
+
+        # Filter the series to the selected period
+        view_series = chart_series[chart_series.index >= start_date]
+
+        if len(view_series) < 2:
+            st.warning(f"Not enough data to display for the selected {period} period.")
+        else:
+            # Rebase the series to 0% at the start of the selected window
+            rebased_series = (view_series / view_series.iloc[0] - 1) * 100
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=rebased_series.index, 
+                y=rebased_series.values,
+                mode="lines", 
+                name=choice, 
+                line=dict(width=2),
+            ))
+            fig.update_layout(
+                yaxis_title="Total return (%)",
+                margin=dict(l=10, r=10, t=30, b=10),
+                height=450,
+            )
+            
+            # Optional: We keep the native Plotly buttons as well. 
+            # They will now act as a secondary zoom on top of the rebased view.
+            fig.update_xaxes(
+                rangeselector=dict(buttons=[
+                    dict(count=5, label="5D", step="day", stepmode="backward"),
+                    dict(count=1, label="1M", step="month", stepmode="backward"),
+                    dict(count=3, label="3M", step="month", stepmode="backward"),
+                    dict(count=6, label="6M", step="month", stepmode="backward"),
+                    dict(step="year", stepmode="todate", label="YTD"),
+                    dict(count=1, label="1Y", step="year", stepmode="backward"),
+                    dict(count=3, label="3Y", step="year", stepmode="backward"),
+                    dict(count=5, label="5Y", step="year", stepmode="backward"),
+                    dict(step="all", label="Max"),
+                ]),
+                rangeslider=dict(visible=False),
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Comparison table")
     today = pd.Timestamp(date.today())
