@@ -237,9 +237,18 @@ def render_dashboard(series_options: dict):
                 yaxis_title="Total return (%)",
                 margin=dict(l=10, r=10, t=30, b=10),
                 height=450,
+                dragmode=False, # Disables dragging/panning on the chart
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            # Configuration to lock the chart down for mobile
+            plotly_config = {
+                'displayModeBar': False, # Hides the Plotly hover toolbar
+                'displaylogo': False,
+                'scrollZoom': False,     # Prevents scroll wheel/touch zoom
+                'doubleClick': 'reset',  # Prevents double tap zoom glitches
+            }
+            
+            st.plotly_chart(fig, use_container_width=True, config=plotly_config)
 
     st.subheader("Comparison table")
     today = pd.Timestamp(date.today())
