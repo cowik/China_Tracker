@@ -21,7 +21,6 @@ SHEET_SCHEMAS = {
     "transactions": ["date", "portfolio", "ticker", "type", "amount_note"],
     "backtest_history": ["date", "portfolio", "index_value"],
     "portfolio_settings": ["portfolio", "rebalance_frequency"],
-    "price_cache": ["ticker", "date", "close", "asset_type"],
 }
 
 TICKER_COLUMNS = {"ticker"}
@@ -111,21 +110,7 @@ def append_rows(tab_name: str, rows: list[dict]) -> None:
 
 
 def clear_caches():
-    """Clear cached Sheet reads so freshly-saved rows show up right away.
-
-    This used to be `st.cache_data.clear()`, which wipes EVERY cached
-    function in the whole app - including data_fetch.py's price-series
-    caches. That meant something as small as editing a position's target
-    weight, or changing the rebalance frequency dropdown, would also nuke
-    the entire price-history cache, forcing the *next* Home page load to
-    redo the expensive BaoStock/yfinance fetch for every single holding
-    (i.e. re-trigger the multi-minute cold start) even though prices
-    hadn't changed at all.
-
-    Scoping this to just `read_df` means position/watchlist/backtest edits
-    are picked up immediately, without touching data_fetch's price caches.
-    """
-    read_df.clear()
+    st.cache_data.clear()
 
 
 def get_rebalance_frequency(portfolio_label: str) -> str:
