@@ -25,19 +25,16 @@ SHEET_SCHEMAS = {
 
 TICKER_COLUMNS = {"ticker"}
 
-
 @st.cache_resource(show_spinner=False)
 def _get_client() -> gspread.Client:
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
 
-
 @st.cache_resource(show_spinner=False)
 def _get_spreadsheet():
     client = _get_client()
     return client.open_by_key(st.secrets["google_sheet_id"])
-
 
 def _get_or_create_worksheet(tab_name: str):
     ss = _get_spreadsheet()
@@ -50,7 +47,6 @@ def _get_or_create_worksheet(tab_name: str):
             ws.append_row(headers)
         return ws
 
-
 @st.cache_data(ttl=900, show_spinner=False)
 def read_df(tab_name: str) -> pd.DataFrame:
     ws = _get_or_create_worksheet(tab_name)
@@ -58,14 +54,12 @@ def read_df(tab_name: str) -> pd.DataFrame:
     if not records:
         return pd.DataFrame(columns=SHEET_SCHEMAS.get(tab_name, []))
     df = pd.DataFrame(records)
-    # Zero-pad ticker columns to 6 digits
     for col in TICKER_COLUMNS:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
             df[col] = df[col].str.replace(r'[^\d]', '', regex=True)
             df[col] = df[col].apply(lambda x: x.zfill(6) if x.isdigit() else x)
     return df
-
 
 def write_df(tab_name: str, df: pd.DataFrame) -> None:
     ws = _get_or_create_worksheet(tab_name)
@@ -95,7 +89,6 @@ def write_df(tab_name: str, df: pd.DataFrame) -> None:
             st.error(f"Failed to save data to Google Sheets: {e}")
             raise
 
-
 def append_rows(tab_name: str, rows: list[dict]) -> None:
     if not rows:
         return
@@ -108,10 +101,12 @@ def append_rows(tab_name: str, rows: list[dict]) -> None:
         st.error(f"Failed to append rows: {e}")
         raise
 
-
 def clear_caches():
-    st.cache_data.clear()
-
+    """Clear cached Sheet reads so freshly-saved rows show up right away.
+    Scoping this to just `read_df` means position/watchlist/backtest edits
+    are picked up immediately, without touching data_fetch's price caches.
+    """
+    read_df.clear()
 
 def get_rebalance_frequency(portfolio_label: str) -> str:
     df = read_df("portfolio_settings")
@@ -119,7 +114,6 @@ def get_rebalance_frequency(portfolio_label: str) -> str:
         return "none"
     row = df[df["portfolio"] == portfolio_label].iloc[0]
     return row.get("rebalance_frequency", "none") or "none"
-
 
 def save_rebalance_frequency(portfolio_label: str, frequency: str) -> None:
     df = read_df("portfolio_settings")
