@@ -1,7 +1,7 @@
 """
 Data fetching with persistent local SQLite cache.
 - Stocks: BaoStock (adjustflag='2') -> yfinance fallback.
-- ETFs: AkShare (adjust='qfq') -> yfinance fallback.
+- ETFs: yfinance only.
 """
 from __future__ import annotations
 import time
@@ -149,30 +149,8 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
                 return pd.DataFrame()
     return pd.DataFrame()
 
-def _fetch_etf_history_akshare(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """Fetch ETF history using AkShare. 
-    adjust='qfq' means forward-adjusted (handles splits/dividends correctly)."""
-    try:
-        import akshare as ak
-        # AkShare expects YYYYMMDD format
-        start_fmt = pd.Timestamp(start_date).strftime("%Y%m%d")
-        end_fmt = pd.Timestamp(end_date).strftime("%Y%m%d")
-        
-        df = ak.fund_etf_hist_em(symbol=ticker, period="daily", start_date=start_fmt, end_date=end_fmt, adjust="qfq")
-        if df is None or df.empty:
-            return pd.DataFrame()
-            
-        df = df[['日期', '收盘']].copy()
-        df.columns = ['date', 'close']
-        df['date'] = pd.to_datetime(df['date'])
-        df['close'] = pd.to_numeric(df['close'], errors='coerce')
-        df = df.dropna(subset=['close'])
-        return df.sort_values('date').reset_index(drop=True)
-    except Exception:
-        return pd.DataFrame()
-
 def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict[str, pd.DataFrame]:
-    """Fetch multiple tickers using a single BaoStock session for stocks, AkShare for ETFs."""
+    """Fetch multiple tickers using a single BaoStock session for stocks, yfinance for ETFs."""
     import baostock as bs
     results = {}
     
@@ -242,13 +220,10 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
             if session_ok:
                 bs.logout()
                 
-    # --- Fetch ETFs (AkShare -> yfinance fallback) ---
+    # --- Fetch ETFs (yfinance) ---
     for ticker, asset_type, start_date, end_date in etf_reqs:
-        df = _fetch_etf_history_akshare(ticker, start_date, end_date)
-        
-        if df.empty:
-            yf_ticker = _to_yfinance_ticker(ticker)
-            df = _retry_download_yfinance(yf_ticker, start_date, end_date)
+        yf_ticker = _to_yfinance_ticker(ticker)
+        df = _retry_download_yfinance(yf_ticker, start_date, end_date)
             
         if not df.empty:
             results[ticker] = df
@@ -338,7 +313,7 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
 @st.cache_data(ttl=300, show_spinner=False)
 def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     """
-    Fetches prices for a list of holdings using BaoStock/AkShare 
+    Fetches prices for a list of holdings using a single BaoStock session 
     and batches writes to SQLite.
     """
     conn = _get_db_conn()
