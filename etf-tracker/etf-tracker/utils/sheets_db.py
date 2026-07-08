@@ -1,3 +1,6 @@
+"""
+Persistence layer: everything is stored in one Google Sheet, in separate tabs.
+"""
 from __future__ import annotations
 import gspread
 import pandas as pd
@@ -20,7 +23,7 @@ SHEET_SCHEMAS = {
     "backtest_history": ["date", "portfolio", "index_value"],
     "portfolio_settings": ["portfolio", "rebalance_frequency"],
     "display_order": ["label", "sort_order"],
-    "price_cache": ["ticker", "asset_type", "date", "close"],   # <-- ADD THIS
+    "price_cache": ["ticker", "asset_type", "date", "close"],
 }
 
 TICKER_COLUMNS = {"ticker"}
@@ -60,7 +63,8 @@ def read_df(tab_name: str) -> pd.DataFrame:
             df[col] = df[col].str.replace(r'[^\d]', '', regex=True)
             df[col] = df[col].apply(lambda x: x.zfill(6) if x.isdigit() else x)
             
-    for col in ["index_value", "weight"]:
+    # FIX: Clean numeric columns that might be saved as text with commas/dots
+    for col in ["index_value", "weight", "close"]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace(",", ".", regex=False)
             df[col] = df[col].str.replace(r"[^\d.\-]", "", regex=True)
@@ -80,7 +84,8 @@ def write_df(tab_name: str, df: pd.DataFrame) -> None:
     for col in df.columns:
         if col == "ticker":
             df[col] = df[col].astype(str).str.strip()
-        elif col in ["index_value", "weight"]:
+        elif col in ["index_value", "weight", "close"]:
+            # Convert to float, then format as string with a dot to defeat locale rules
             df[col] = pd.to_numeric(df[col], errors="coerce")
             df[col] = df[col].apply(lambda x: f"{x:.8f}" if pd.notnull(x) else "")
         elif pd.api.types.is_datetime64_any_dtype(df[col]):
@@ -115,6 +120,7 @@ def append_rows(tab_name: str, rows: list[dict]) -> None:
         raise
 
 def clear_caches():
+    """Wipes all Streamlit caches so fresh data is loaded from Google Sheets immediately."""
     st.cache_data.clear()
 
 def get_rebalance_frequency(portfolio_label: str) -> str:
@@ -133,7 +139,9 @@ def save_rebalance_frequency(portfolio_label: str, frequency: str) -> None:
     write_df("portfolio_settings", df)
     clear_caches()
 
+# --------------------------------------------------------------- dynamic portfolios --
 def get_portfolios() -> dict[str, str]:
+    """Returns {tab_name: label}. Migrates hardcoded ones if table is empty."""
     df = read_df("portfolios_meta")
     if df.empty:
         df = pd.DataFrame([
@@ -149,6 +157,7 @@ def add_portfolio(label: str) -> str:
     existing_nums = [int(t.replace("portfolio", "").replace("_positions", "")) for t in df["tab_name"] if t.startswith("portfolio") and t.endswith("_positions")]
     next_num = max(existing_nums) + 1 if existing_nums else 1
     tab_name = f"portfolio{next_num}_positions"
+    
     new_row = pd.DataFrame([{"tab_name": tab_name, "label": label}])
     df = pd.concat([df, new_row], ignore_index=True)
     write_df("portfolios_meta", df)
@@ -160,23 +169,29 @@ def delete_portfolio(tab_name: str, label: str) -> None:
     df = read_df("portfolios_meta")
     df = df[df["tab_name"] != tab_name]
     write_df("portfolios_meta", df)
+    
     try:
         ss = _get_spreadsheet()
         ws = ss.worksheet(tab_name)
         ss.del_worksheet(ws)
     except Exception:
         pass
+        
     bt = read_df("backtest_history")
     if not bt.empty:
         bt = bt[bt["portfolio"] != label]
         write_df("backtest_history", bt)
+        
     settings = read_df("portfolio_settings")
     if not settings.empty:
         settings = settings[settings["portfolio"] != label]
         write_df("portfolio_settings", settings)
+        
     clear_caches()
 
+# --------------------------------------------------------------- display order --
 def get_display_order() -> dict[str, int]:
+    """Returns {label: sort_order}. Items not in dict will default to 9999."""
     df = read_df("display_order")
     if df.empty:
         return {}
