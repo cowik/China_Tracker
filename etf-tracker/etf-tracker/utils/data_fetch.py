@@ -1,12 +1,11 @@
 """
 Data fetching with persistent local SQLite cache.
-- Stocks: BaoStock (adjustflag='2') -> BaoStock unadjusted -> yfinance.
-- ETFs: yfinance only.
+- Stocks & ETFs: BaoStock (adjustflag='2') -> yfinance fallback.
 - Uses batch fetching to minimize BaoStock login/logout cycles.
 """
 from __future__ import annotations
 import time
-import random1
+import random
 import sqlite3
 import os
 from datetime import datetime, timedelta
@@ -26,15 +25,8 @@ BEIJING_TZ = pytz.timezone("Asia/Shanghai")
 def _get_db_conn():
     os.makedirs("data", exist_ok=True)
     conn = sqlite3.connect("data/prices.db", check_same_thread=False)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS price_cache (
-            ticker TEXT,
-            asset_type TEXT,
-            date TEXT,
-            close REAL,
-            PRIMARY KEY (ticker, asset_type, date)
-        )
-    """)
+    # Enable WAL mode to prevent "database is locked" errors
+    conn.execute("PRAGMA journal_mode=WAL;")
     conn.commit()
     return conn
 
@@ -63,22 +55,6 @@ def _to_yfinance_ticker(ticker: str) -> str:
     if not ticker:
         return ticker
     return f"{ticker}.SS" if ticker[0] in ("5", "6") else f"{ticker}.SZ"
-        
-        # Clean up columns
-        df = df[['日期', '收盘']].copy()
-        df.columns = ['date', 'close']
-        df['date'] = pd.to_datetime(df['date'])
-        df['close'] = pd.to_numeric(df['close'], errors='coerce')
-        df = df.dropna(subset=['close'])
-        
-        # Filter by start and end dates (inclusive)
-        start_ts = pd.Timestamp(start_date)
-        end_ts = pd.Timestamp(end_date)
-        df = df[(df['date'] >= start_ts) & (df['date'] <= end_ts)]
-        
-        return df.sort_values('date').reset_index(drop=True)
-    except Exception:
-        return pd.DataFrame()
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _get_last_trading_day() -> str:
@@ -154,7 +130,7 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
             out.columns = ["date", "close"]
             out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None)
             
-            # --- ADD THIS LINE: Filter out intraday data to sync with 17:30 BaoStock rule ---
+            # Filter out intraday data to sync with 17:30 BaoStock rule
             out = out[out["date"].dt.normalize() <= pd.Timestamp(end)]
             
             return out
@@ -236,7 +212,7 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
             bs.logout()
             
     return results
-            
+
 # --------------------------------------------------------------- batch watchlist --
 @st.cache_data(ttl=300, show_spinner=False)
 def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
@@ -247,16 +223,13 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
     
     tickers = []
     labels = []
-    yf_tickers = []
     for _, row in watchlist_df.iterrows():
         ticker = str(row["ticker"]).strip()
         if not ticker:
             continue
         name = str(row.get("name", "")).strip() or ticker
-        yf_ticker = _to_yfinance_ticker(ticker)
         tickers.append(ticker)
         labels.append(f"{name} ({ticker})")
-        yf_tickers.append(yf_ticker)
         
     if not tickers:
         return {}
@@ -268,7 +241,7 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
     results = {}
     missing_tickers = []
     missing_labels = []
-    missing_yf_tickers = []
+    missing_requests = []
     
     for i, t in enumerate(tickers):
         df_cache = pd.read_sql(
@@ -286,7 +259,7 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
                     
         missing_tickers.append(t)
         missing_labels.append(labels[i])
-        missing_yf_tickers.append(yf_tickers[i])
+        missing_requests.append((t, 'etf', start_date, end_date))
         
     if missing_requests:
         fetched_data = _fetch_missing_data_batch(missing_requests)
@@ -315,9 +288,11 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
                 rows_to_write
             )
             conn.commit()
+            
+    return results
 
 # ------------------------------------------------------------------ public --
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     """
     Fetches prices for a list of holdings using a single BaoStock session 
