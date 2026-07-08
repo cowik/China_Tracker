@@ -1,6 +1,3 @@
-"""
-Persistence layer: everything is stored in one Google Sheet, in separate tabs.
-"""
 from __future__ import annotations
 import gspread
 import pandas as pd
@@ -62,19 +59,16 @@ def read_df(tab_name: str) -> pd.DataFrame:
             df[col] = df[col].str.replace(r'[^\d]', '', regex=True)
             df[col] = df[col].apply(lambda x: x.zfill(6) if x.isdigit() else x)
             
-    # FIX: Clean numeric columns that might be saved as text with commas/dots
     for col in ["index_value", "weight"]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace(",", ".", regex=False)
             df[col] = df[col].str.replace(r"[^\d.\-]", "", regex=True)
             df[col] = pd.to_numeric(df[col], errors="coerce")
-        
     return df
 
 def write_df(tab_name: str, df: pd.DataFrame) -> None:
     ws = _get_or_create_worksheet(tab_name)
     ws.clear()
-    
     if df.empty:
         headers = SHEET_SCHEMAS.get(tab_name, [])
         if headers:
@@ -82,13 +76,10 @@ def write_df(tab_name: str, df: pd.DataFrame) -> None:
         return
 
     df = df.copy()
-    
-    # 1. Sanitize all columns into clean strings/floats before sending
     for col in df.columns:
         if col == "ticker":
             df[col] = df[col].astype(str).str.strip()
         elif col in ["index_value", "weight"]:
-            # Convert to float, then format as string with a dot to defeat locale rules
             df[col] = pd.to_numeric(df[col], errors="coerce")
             df[col] = df[col].apply(lambda x: f"{x:.8f}" if pd.notnull(x) else "")
         elif pd.api.types.is_datetime64_any_dtype(df[col]):
@@ -98,18 +89,12 @@ def write_df(tab_name: str, df: pd.DataFrame) -> None:
             if first_valid is not None:
                 sample = df.loc[first_valid, col]
                 if isinstance(sample, (pd.Timestamp, datetime.datetime, datetime.date)):
-                    df[col] = df[col].apply(
-                        lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x)
-                    )
+                    df[col] = df[col].apply(lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x))
 
-    # 2. Replace any remaining NaN/None with empty strings
     df = df.astype(object).where(pd.notnull(df), "")
-    
-    # 3. Convert to list of lists
     rows = df.values.tolist()
     headers = df.columns.values.tolist()
     
-    # 4. Send exactly one atomic update to Google Sheets with raw=True
     try:
         ws.update([headers] + rows, raw=True)
     except Exception as e:
@@ -129,7 +114,6 @@ def append_rows(tab_name: str, rows: list[dict]) -> None:
         raise
 
 def clear_caches():
-    """Wipes all Streamlit caches so fresh data is loaded from Google Sheets immediately."""
     st.cache_data.clear()
 
 def get_rebalance_frequency(portfolio_label: str) -> str:
@@ -148,9 +132,7 @@ def save_rebalance_frequency(portfolio_label: str, frequency: str) -> None:
     write_df("portfolio_settings", df)
     clear_caches()
 
-# --------------------------------------------------------------- dynamic portfolios --
 def get_portfolios() -> dict[str, str]:
-    """Returns {tab_name: label}. Migrates hardcoded ones if table is empty."""
     df = read_df("portfolios_meta")
     if df.empty:
         df = pd.DataFrame([
@@ -166,7 +148,6 @@ def add_portfolio(label: str) -> str:
     existing_nums = [int(t.replace("portfolio", "").replace("_positions", "")) for t in df["tab_name"] if t.startswith("portfolio") and t.endswith("_positions")]
     next_num = max(existing_nums) + 1 if existing_nums else 1
     tab_name = f"portfolio{next_num}_positions"
-    
     new_row = pd.DataFrame([{"tab_name": tab_name, "label": label}])
     df = pd.concat([df, new_row], ignore_index=True)
     write_df("portfolios_meta", df)
@@ -178,29 +159,23 @@ def delete_portfolio(tab_name: str, label: str) -> None:
     df = read_df("portfolios_meta")
     df = df[df["tab_name"] != tab_name]
     write_df("portfolios_meta", df)
-    
     try:
         ss = _get_spreadsheet()
         ws = ss.worksheet(tab_name)
         ss.del_worksheet(ws)
     except Exception:
         pass
-        
     bt = read_df("backtest_history")
     if not bt.empty:
         bt = bt[bt["portfolio"] != label]
         write_df("backtest_history", bt)
-        
     settings = read_df("portfolio_settings")
     if not settings.empty:
         settings = settings[settings["portfolio"] != label]
         write_df("portfolio_settings", settings)
-        
     clear_caches()
 
-# --------------------------------------------------------------- display order --
 def get_display_order() -> dict[str, int]:
-    """Returns {label: sort_order}. Items not in dict will default to 9999."""
     df = read_df("display_order")
     if df.empty:
         return {}
@@ -208,4 +183,6 @@ def get_display_order() -> dict[str, int]:
     return dict(zip(df["label"], df["sort_order"]))
 
 def save_display_order(labels: list[str]) -> None:
-    df = pd.DataFrame
+    df = pd.DataFrame({"label": labels, "sort_order": range(1, len(labels) + 1)})
+    write_df("display_order", df)
+    clear_caches()
