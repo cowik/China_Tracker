@@ -221,16 +221,19 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
         if not cached.empty:
             cached["date"] = pd.to_datetime(cached["date"])
             cached["close"] = pd.to_numeric(cached["close"], errors="coerce")
-            s = cached.sort_values("date").set_index("date")["close"]
-            if not s.empty:
-                max_date = s.index.max()
-                if max_date >= pd.Timestamp(end_date) - pd.Timedelta(days=4):
-                    results[labels[i]] = s / s.iloc[0]
-                    continue
-                    
-        missing_requests.append((t, 'etf', start_date, end_date))
-        missing_labels.append(labels[i])
-        
+            cached_series = cached.sort_values("date").set_index("date")["close"]
+            results[labels[i]] = cached_series / cached_series.iloc[0]
+            
+            # Check if we need to fetch newer data
+            max_cached_date = cached_series.index.max()
+            start_fetch = (max_cached_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            if start_fetch <= end_date:
+                missing_requests.append((t, 'etf', start_fetch, end_date))
+                missing_labels.append(labels[i])
+        else:
+            missing_requests.append((t, 'etf', start_date, end_date))
+            missing_labels.append(labels[i])
+            
     if missing_requests:
         fetched_data = _fetch_missing_data_batch(missing_requests)
         rows_to_append = []
@@ -247,8 +250,11 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
                 df = df[df["date"].dt.normalize() <= pd.Timestamp(end_date)]
                 
                 if not df.empty:
-                    close_series = df.set_index("date")["close"]
-                    results[label] = close_series / close_series.iloc[0]
+                    # Combine old cache with new fetch for the final series
+                    old_series = results.get(label, pd.Series(dtype=float))
+                    new_series = df.set_index("date")["close"]
+                    combined_series = pd.concat([old_series, new_series]).sort_index()
+                    results[label] = combined_series / combined_series.iloc[0]
                     
                     for dt, price in zip(df["date"], df["close"]):
                         rows_to_append.append({"ticker": ticker, "asset_type": "etf", "date": dt.strftime("%Y-%m-%d"), "close": price})
