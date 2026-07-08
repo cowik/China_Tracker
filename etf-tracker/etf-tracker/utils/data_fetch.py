@@ -70,7 +70,6 @@ def _get_last_trading_day() -> str:
     now_beijing = _now_beijing()
     
     # BaoStock delay: Daily closing data isn't available until ~17:30 Beijing time.
-    # If it's before 17:30, we must look for the *previous* trading day.
     cutoff_time = now_beijing.replace(hour=17, minute=30, second=0, microsecond=0)
     if now_beijing < cutoff_time:
         now_beijing -= timedelta(days=1)
@@ -87,8 +86,6 @@ def _get_last_trading_day() -> str:
                 trading_days = []
                 while rs.next():
                     row = rs.get_row_data()
-                    # BaoStock returns [date, is_trading_day]. 
-                    # We must check if is_trading_day == "1" to skip holidays/weekends!
                     if row and len(row) >= 2 and row[1] == "1":
                         trading_days.append(row[0])
                 bs.logout()
@@ -97,7 +94,6 @@ def _get_last_trading_day() -> str:
     except Exception:
         pass
         
-    # Fallback: just step back over weekends if API fails
     dt = _now_beijing()
     if dt.hour < 17:
         dt -= timedelta(days=1)
@@ -107,7 +103,6 @@ def _get_last_trading_day() -> str:
 
 # ------------------------------------------------------------ raw fetchers --
 def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) -> pd.DataFrame:
-    # yfinance uses EXCLUSIVE end dates. We must add 1 day to actually get the "end" day.
     try:
         end_date_exclusive = (pd.Timestamp(end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     except Exception:
@@ -123,7 +118,6 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
             if df.empty:
                 return pd.DataFrame()
             
-            # Handle yfinance MultiIndex columns (fixes KeyError crash)
             if isinstance(df.columns, pd.MultiIndex):
                 if "Adj Close" in df.columns.get_level_values(0):
                     close = df["Adj Close"].iloc[:, 0]
@@ -254,7 +248,6 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
     end_date = _get_last_trading_day()
     start_date = (datetime.now(BEIJING_TZ) - timedelta(days=3650)).strftime("%Y-%m-%d")
     
-    # Check what we have in SQLite
     results = {}
     missing_tickers = []
     missing_labels = []
@@ -365,7 +358,6 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     for ticker, asset_type, _, _ in missing_requests:
         if ticker in fetched_data and not fetched_data[ticker].empty:
             df = fetched_data[ticker].copy()
-            # Ensure date is string and close is strictly numeric
             df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
             df["close"] = pd.to_numeric(df["close"], errors="coerce")
             df = df.dropna(subset=["close"])
