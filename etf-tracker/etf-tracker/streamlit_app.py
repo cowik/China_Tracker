@@ -1,16 +1,21 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import date, timedelta
+import pytz
+from datetime import date, datetime, timedelta
 
 from utils import sheets_db, data_fetch, returns
 
+# ----- Page config with collapsed sidebar -----
 st.set_page_config(
     page_title="China Portfolio & ETF Tracker",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
+BEIJING_TZ = pytz.timezone("Asia/Shanghai")
+
+# ----- Custom CSS -----
 st.markdown(
     """
     <style>
@@ -33,6 +38,8 @@ st.markdown(
         footer {
             margin-bottom: 2rem;
         }
+        
+        /* --- MOBILE TABLE FIXES --- */
         [data-testid="stDataFrame"] {
             max-width: 100% !important;
             overflow: hidden !important; 
@@ -49,6 +56,8 @@ st.markdown(
                 padding-right: 1rem !important;
             }
         }
+        
+        /* --- STATIC TABLE FIXES --- */
         [data-testid="stTable"] {
             width: 100% !important;
         }
@@ -104,7 +113,7 @@ def load_backtest(portfolio_label: str) -> pd.Series:
     df = df.sort_values("date")
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
     price_data = data_fetch.get_prices_batch(holdings)
     backtest_index_values = load_backtest(portfolio_label)
@@ -145,6 +154,7 @@ with st.spinner("Loading your data..."):
         watchlist_prices = data_fetch.get_watchlist_prices(watchlist_df)
         series_options.update(watchlist_prices)
 
+    # Sort series_options based on saved display order
     order_map = sheets_db.get_display_order()
     sorted_keys = sorted(series_options.keys(), key=lambda x: order_map.get(x, 9999))
     series_options = {k: series_options[k] for k in sorted_keys}
@@ -153,9 +163,22 @@ if not series_options:
     st.info("No portfolios or watchlist ETFs set up yet. Go to the **Manage** page to add them.")
     st.stop()
 
-@st.fragment(run_every=timedelta(minutes=5))
+@st.fragment(run_every=timedelta(minutes=30))
 def render_dashboard(series_options: dict):
+    # --- SMART 17:30 CACHE CLEAR ---
+    now_beijing = datetime.now(BEIJING_TZ)
+    today_str = now_beijing.strftime("%Y-%m-%d")
+    
+    # If it's past 17:30, and we haven't cleared the cache today, wipe it!
+    if now_beijing.hour > 17 or (now_beijing.hour == 17 and now_beijing.minute >= 30):
+        if st.session_state.get("last_cache_clear_date") != today_str:
+            st.cache_data.clear()
+            st.session_state["last_cache_clear_date"] = today_str
+            st.rerun()
+    # --------------------------------
+
     st.subheader("Performance chart")
+    
     col1, col2 = st.columns([3, 2])
     with col1:
         choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
