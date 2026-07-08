@@ -97,14 +97,14 @@ def write_df(tab_name: str, df: pd.DataFrame) -> None:
                             lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x)
                         )
                         
+        # FIX: Use the sanitized 'rows' variable which replaces NaN with ""
         rows = df.astype(object).where(pd.notnull(df), "").values.tolist()
         try:
-            # value_input_option="RAW" tells Google Sheets to store exactly what we send.
-            ws.update([df.columns.values.tolist()] + df.values.tolist(), raw=True)
+            ws.update([df.columns.values.tolist()] + rows, value_input_option='RAW')
         except Exception as e:
             st.error(f"Failed to save data to Google Sheets: {e}")
             raise
-            
+
 def append_rows(tab_name: str, rows: list[dict]) -> None:
     if not rows:
         return
