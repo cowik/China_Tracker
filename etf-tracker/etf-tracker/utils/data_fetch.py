@@ -1,7 +1,7 @@
 """
 Data fetching with persistent local SQLite cache.
-- Stocks & ETFs: BaoStock (adjustflag='2') -> yfinance fallback.
-- Uses batch fetching to minimize BaoStock login/logout cycles.
+- Stocks: BaoStock (adjustflag='2') -> yfinance fallback.
+- ETFs: AkShare (adjust='qfq') -> yfinance fallback.
 """
 from __future__ import annotations
 import time
@@ -149,49 +149,55 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
                 return pd.DataFrame()
     return pd.DataFrame()
 
+def _fetch_etf_history_akshare(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """Fetch ETF history using AkShare. 
+    adjust='qfq' means forward-adjusted (handles splits/dividends correctly)."""
+    try:
+        import akshare as ak
+        # AkShare expects YYYYMMDD format
+        start_fmt = pd.Timestamp(start_date).strftime("%Y%m%d")
+        end_fmt = pd.Timestamp(end_date).strftime("%Y%m%d")
+        
+        df = ak.fund_etf_hist_em(symbol=ticker, period="daily", start_date=start_fmt, end_date=end_fmt, adjust="qfq")
+        if df is None or df.empty:
+            return pd.DataFrame()
+            
+        df = df[['日期', '收盘']].copy()
+        df.columns = ['date', 'close']
+        df['date'] = pd.to_datetime(df['date'])
+        df['close'] = pd.to_numeric(df['close'], errors='coerce')
+        df = df.dropna(subset=['close'])
+        return df.sort_values('date').reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
+
 def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict[str, pd.DataFrame]:
-    """Fetch multiple tickers using a single BaoStock session."""
+    """Fetch multiple tickers using a single BaoStock session for stocks, AkShare for ETFs."""
     import baostock as bs
     results = {}
     
     if not requests:
         return results
         
+    stock_reqs = [(t, at, s, e) for t, at, s, e in requests if at == "stock"]
+    etf_reqs = [(t, at, s, e) for t, at, s, e in requests if at != "stock"]
+    
+    # --- Fetch Stocks (BaoStock) ---
     session_ok = False
-    try:
-        lg = bs.login()
-        session_ok = lg is not None and lg.error_code == "0"
-        
-        for ticker, asset_type, start_date, end_date in requests:
-            bs_ticker = _to_baostock_ticker(ticker)
-            df = pd.DataFrame()
+    if stock_reqs:
+        try:
+            lg = bs.login()
+            session_ok = lg is not None and lg.error_code == "0"
             
-            # Try BaoStock adjustflag="2" (forward adjusted for splits/dividends)
-            try:
-                rs = bs.query_history_k_data_plus(
-                    bs_ticker, "date,close",
-                    start_date=start_date, end_date=end_date,
-                    frequency="d", adjustflag="2",
-                )
-                if rs.error_code == "0":
-                    data_list = []
-                    while rs.next():
-                        data_list.append(rs.get_row_data())
-                    if data_list:
-                        df = pd.DataFrame(data_list, columns=rs.fields)
-                        df["date"] = pd.to_datetime(df["date"])
-                        df["close"] = pd.to_numeric(df["close"], errors="coerce")
-                        df = df.dropna(subset=["close"])[["date", "close"]]
-            except Exception:
-                pass
+            for ticker, asset_type, start_date, end_date in stock_reqs:
+                bs_ticker = _to_baostock_ticker(ticker)
+                df = pd.DataFrame()
                 
-            # Try BaoStock adjustflag="3" if empty
-            if df.empty:
                 try:
                     rs = bs.query_history_k_data_plus(
                         bs_ticker, "date,close",
                         start_date=start_date, end_date=end_date,
-                        frequency="d", adjustflag="3",
+                        frequency="d", adjustflag="2",
                     )
                     if rs.error_code == "0":
                         data_list = []
@@ -205,19 +211,47 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
                 except Exception:
                     pass
                     
-            # Fallback to yfinance if BaoStock fails completely
-            if df.empty:
-                yf_ticker = _to_yfinance_ticker(ticker)
-                df = _retry_download_yfinance(yf_ticker, start_date, end_date)
+                if df.empty:
+                    try:
+                        rs = bs.query_history_k_data_plus(
+                            bs_ticker, "date,close",
+                            start_date=start_date, end_date=end_date,
+                            frequency="d", adjustflag="3",
+                        )
+                        if rs.error_code == "0":
+                            data_list = []
+                            while rs.next():
+                                data_list.append(rs.get_row_data())
+                            if data_list:
+                                df = pd.DataFrame(data_list, columns=rs.fields)
+                                df["date"] = pd.to_datetime(df["date"])
+                                df["close"] = pd.to_numeric(df["close"], errors="coerce")
+                                df = df.dropna(subset=["close"])[["date", "close"]]
+                    except Exception:
+                        pass
+                        
+                if df.empty:
+                    yf_ticker = _to_yfinance_ticker(ticker)
+                    df = _retry_download_yfinance(yf_ticker, start_date, end_date)
+                    
+                if not df.empty:
+                    results[ticker] = df
+        except Exception:
+            pass
+        finally:
+            if session_ok:
+                bs.logout()
                 
-            if not df.empty:
-                results[ticker] = df
-                
-    except Exception:
-        pass
-    finally:
-        if session_ok:
-            bs.logout()
+    # --- Fetch ETFs (AkShare -> yfinance fallback) ---
+    for ticker, asset_type, start_date, end_date in etf_reqs:
+        df = _fetch_etf_history_akshare(ticker, start_date, end_date)
+        
+        if df.empty:
+            yf_ticker = _to_yfinance_ticker(ticker)
+            df = _retry_download_yfinance(yf_ticker, start_date, end_date)
+            
+        if not df.empty:
+            results[ticker] = df
             
     return results
 
@@ -304,7 +338,7 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
 @st.cache_data(ttl=300, show_spinner=False)
 def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     """
-    Fetches prices for a list of holdings using a single BaoStock session 
+    Fetches prices for a list of holdings using BaoStock/AkShare 
     and batches writes to SQLite.
     """
     conn = _get_db_conn()
