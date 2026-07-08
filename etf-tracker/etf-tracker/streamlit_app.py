@@ -5,14 +5,12 @@ from datetime import date, timedelta
 
 from utils import sheets_db, data_fetch, returns
 
-# ----- Page config with collapsed sidebar -----
 st.set_page_config(
     page_title="China Portfolio & ETF Tracker",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-# ----- Custom CSS -----
 st.markdown(
     """
     <style>
@@ -35,8 +33,6 @@ st.markdown(
         footer {
             margin-bottom: 2rem;
         }
-        
-        /* --- MOBILE TABLE FIXES --- */
         [data-testid="stDataFrame"] {
             max-width: 100% !important;
             overflow: hidden !important; 
@@ -53,8 +49,6 @@ st.markdown(
                 padding-right: 1rem !important;
             }
         }
-        
-        /* --- STATIC TABLE FIXES --- */
         [data-testid="stTable"] {
             width: 100% !important;
         }
@@ -151,36 +145,24 @@ with st.spinner("Loading your data..."):
         watchlist_prices = data_fetch.get_watchlist_prices(watchlist_df)
         series_options.update(watchlist_prices)
 
-    # Sort series_options based on saved display order
     order_map = sheets_db.get_display_order()
     sorted_keys = sorted(series_options.keys(), key=lambda x: order_map.get(x, 9999))
     series_options = {k: series_options[k] for k in sorted_keys}
 
 if not series_options:
-    st.info(
-        "No portfolios or watchlist ETFs set up yet. Go to the **Manage** page "
-        "(left sidebar) to add your positions and ETFs."
-    )
+    st.info("No portfolios or watchlist ETFs set up yet. Go to the **Manage** page to add them.")
     st.stop()
 
 @st.fragment(run_every=timedelta(minutes=5))
 def render_dashboard(series_options: dict):
     st.subheader("Performance chart")
-    
     col1, col2 = st.columns([3, 2])
     with col1:
         choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
     with col2:
-        period = st.radio(
-            "Period",
-            options=["5D", "1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "Max"],
-            index=8,
-            horizontal=True,
-            key="period_selector"
-        )
+        period = st.radio("Period", options=["5D", "1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "Max"], index=8, horizontal=True, key="period_selector")
 
     chart_series = series_options.get(choice)
-    
     if chart_series is None or chart_series.dropna().empty:
         st.warning("No price data available yet for this selection.")
     else:
@@ -207,38 +189,16 @@ def render_dashboard(series_options: dict):
             start_date = chart_series.index.min()
 
         view_series = chart_series[chart_series.index >= start_date]
-
         if len(view_series) < 2:
             st.warning(f"Not enough data to display for the selected {period} period.")
         else:
             rebased_series = (view_series / view_series.iloc[0] - 1) * 100
-
             fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=rebased_series.index, 
-                y=rebased_series.values,
-                mode="lines", 
-                name=choice, 
-                line=dict(width=2),
-            ))
-            fig.update_layout(
-                yaxis_title="Total return (%)",
-                margin=dict(l=10, r=10, t=30, b=10),
-                height=450,
-                dragmode=False,
-                hovermode="x",
-            )
-            
+            fig.add_trace(go.Scatter(x=rebased_series.index, y=rebased_series.values, mode="lines", name=choice, line=dict(width=2)))
+            fig.update_layout(yaxis_title="Total return (%)", margin=dict(l=10, r=10, t=30, b=10), height=450, dragmode=False, hovermode="x")
             fig.update_xaxes(showspikes=True, spikethickness=1, spikecolor="gray", spikemode="across")
             fig.update_yaxes(showspikes=True, spikethickness=1, spikecolor="gray", spikemode="across")
-            
-            plotly_config = {
-                'displayModeBar': False,
-                'displaylogo': False,
-                'scrollZoom': False,     
-                'doubleClick': 'reset',  
-            }
-            
+            plotly_config = {'displayModeBar': False, 'displaylogo': False, 'scrollZoom': False, 'doubleClick': 'reset'}
             st.plotly_chart(fig, use_container_width=True, config=plotly_config)
 
     st.subheader("Comparison table")
@@ -254,12 +214,10 @@ def render_dashboard(series_options: dict):
     if rows:
         table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "1Y"]]
         table_df.index.name = None
-
         def color_pct(v):
             if pd.isna(v):
                 return ""
             return f"color: {'#0a7a2f' if v >= 0 else '#c02020'}"
-
         styled = table_df.style.format("{:+.2f}%", na_rep="—").map(color_pct)
         st.table(styled)
     else:
