@@ -62,7 +62,7 @@ def read_df(tab_name: str) -> pd.DataFrame:
             df[col] = df[col].str.replace(r'[^\d]', '', regex=True)
             df[col] = df[col].apply(lambda x: x.zfill(6) if x.isdigit() else x)
             
-    # FIX: Clean numeric columns that might be saved as text with commas/dots
+    # Clean numeric columns that might be saved as text with commas/dots
     for col in ["index_value", "weight"]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace(",", ".", regex=False)
@@ -74,36 +74,48 @@ def read_df(tab_name: str) -> pd.DataFrame:
 def write_df(tab_name: str, df: pd.DataFrame) -> None:
     ws = _get_or_create_worksheet(tab_name)
     ws.clear()
-    headers = list(df.columns) if not df.empty else SHEET_SCHEMAS.get(tab_name, [])
-    ws.append_row(headers)
-    if not df.empty:
-        df = df.copy()
-        for col in df.columns:
-            if col == "ticker":
-                df[col] = df[col].astype(str).str.strip()
-            elif col in ["index_value", "weight"]:
-                # Convert to float first to standardize, then to string with a dot.
-                # We save it as a string so Google Sheets doesn't apply locale rules.
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-                df[col] = df[col].apply(lambda x: f"{x:.8f}" if pd.notnull(x) else "")
-            elif pd.api.types.is_datetime64_any_dtype(df[col]):
-                df[col] = df[col].dt.strftime('%Y-%m-%d')
-            elif df[col].dtype == 'object':
-                first_valid = df[col].first_valid_index()
-                if first_valid is not None:
-                    sample = df.loc[first_valid, col]
-                    if isinstance(sample, (pd.Timestamp, datetime.datetime, datetime.date)):
-                        df[col] = df[col].apply(
-                            lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x)
-                        )
-                        
-        # FIX: Use the sanitized 'rows' variable which replaces NaN with ""
-        rows = df.astype(object).where(pd.notnull(df), "").values.tolist()
-        try:
-            ws.update([df.columns.values.tolist()] + rows, value_input_option='RAW')
-        except Exception as e:
-            st.error(f"Failed to save data to Google Sheets: {e}")
-            raise
+    
+    if df.empty:
+        headers = SHEET_SCHEMAS.get(tab_name, [])
+        if headers:
+            ws.append_row(headers)
+        return
+
+    # Make a copy to avoid modifying the original dataframe
+    df = df.copy()
+    
+    # 1. Sanitize all columns into clean strings/floats before sending
+    for col in df.columns:
+        if col == "ticker":
+            df[col] = df[col].astype(str).str.strip()
+        elif col in ["index_value", "weight"]:
+            # Convert to float, then format as string with a dot to defeat locale rules
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = df[col].apply(lambda x: f"{x:.8f}" if pd.notnull(x) else "")
+        elif pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.strftime('%Y-%m-%d')
+        elif df[col].dtype == 'object':
+            first_valid = df[col].first_valid_index()
+            if first_valid is not None:
+                sample = df.loc[first_valid, col]
+                if isinstance(sample, (pd.Timestamp, datetime.datetime, datetime.date)):
+                    df[col] = df[col].apply(
+                        lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x)
+                    )
+
+    # 2. Replace any remaining NaN/None with empty strings
+    df = df.astype(object).where(pd.notnull(df), "")
+    
+    # 3. Convert to list of lists
+    rows = df.values.tolist()
+    headers = df.columns.values.tolist()
+    
+    # 4. Send exactly one atomic update to Google Sheets with raw=True
+    try:
+        ws.update([headers] + rows, raw=True)
+    except Exception as e:
+        st.error(f"Failed to save data to Google Sheets: {e}")
+        raise
 
 def append_rows(tab_name: str, rows: list[dict]) -> None:
     if not rows:
@@ -118,6 +130,7 @@ def append_rows(tab_name: str, rows: list[dict]) -> None:
         raise
 
 def clear_caches():
+    """Wipes all Streamlit caches so fresh data is loaded from Google Sheets immediately."""
     st.cache_data.clear()
 
 def get_rebalance_frequency(portfolio_label: str) -> str:
