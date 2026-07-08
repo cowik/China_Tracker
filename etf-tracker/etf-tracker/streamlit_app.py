@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import date, timedelta
+from datetime import date
 
 from utils import sheets_db, data_fetch, returns
 
@@ -37,41 +37,24 @@ st.markdown(
         }
         
         /* --- MOBILE TABLE FIXES --- */
+        /* Allow the table container to scroll horizontally if needed */
         [data-testid="stDataFrame"] {
             max-width: 100% !important;
-            overflow: hidden !important; 
+            overflow-x: auto !important;
         }
+        /* Force long Russian portfolio names to wrap to the next line */
         [data-testid="stDataFrame"] th, 
         [data-testid="stDataFrame"] td {
             word-break: break-word !important;
             white-space: normal !important;
-            min-width: 40px !important;
+            min-width: 50px !important;
         }
+        /* Reduce side padding on mobile screens to maximize width */
         @media (max-width: 768px) {
             .block-container {
                 padding-left: 1rem !important;
                 padding-right: 1rem !important;
             }
-        }
-        
-        /* --- STATIC TABLE FIXES --- */
-        [data-testid="stTable"] {
-            width: 100% !important;
-        }
-        /* Center the numeric columns and prevent wrapping */
-        [data-testid="stTable"] th:not(:first-child), 
-        [data-testid="stTable"] td:not(:first-child) {
-            text-align: center !important;
-            white-space: nowrap !important; 
-        }
-        /* Left-align names, cap width on PC, allow wrapping if too long */
-        [data-testid="stTable"] th:first-child,
-        [data-testid="stTable"] td:first-child {
-            text-align: left !important;
-            width: 40% !important;          
-            max-width: 250px !important;    /* Keeps the name part narrow on PC */
-            white-space: normal !important; 
-            word-break: break-word !important;
         }
     </style>
     """,
@@ -84,29 +67,27 @@ st.caption(
     "reinvested), not just price change."
 )
 
-PORTFOLIO_LABELS = sheets_db.get_portfolios()
+PORTFOLIO_LABELS = {
+    "portfolio1_positions": "Возможности Китая",
+    "portfolio2_positions": "Возможности Китая. Специальная 2",
+}
+
 
 def load_holdings(tab_name: str) -> list[dict]:
     df = sheets_db.read_df(tab_name)
     holdings = []
     for _, row in df.iterrows():
         try:
-            ticker = str(row["ticker"]).strip()
-            
-            # Auto-detect ETFs based on ticker prefix if Type is missing
-            asset_type = str(row.get("asset_type", "")).strip().lower()
-            if not asset_type or asset_type not in ["stock", "etf"]:
-                asset_type = "etf" if ticker.startswith(("1", "5")) else "stock"
-                
             holdings.append({
-                "ticker": ticker,
-                "asset_type": asset_type,
+                "ticker": str(row["ticker"]).strip(),
+                "asset_type": str(row.get("asset_type", "stock")).strip().lower() or "stock",
                 "weight": float(row["weight"]) / 100.0,
                 "inception_date": pd.to_datetime(row["purchase_date"]),
             })
         except (KeyError, ValueError, TypeError):
             continue
     return holdings
+
 
 def load_backtest(portfolio_label: str) -> pd.Series:
     df = sheets_db.read_df("backtest_history")
@@ -119,9 +100,12 @@ def load_backtest(portfolio_label: str) -> pd.Series:
     df = df.sort_values("date")
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
-@st.cache_data(ttl=300, show_spinner=False)
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
+    # FIX: Uses batch fetching which opens a single API session for all tickers
     price_data = data_fetch.get_prices_batch(holdings)
+
     backtest_index_values = load_backtest(portfolio_label)
     rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
     live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
@@ -143,27 +127,33 @@ def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[
 
     return returns.chain_link_backtest(backtest_index_values, live_index)
 
+
 def load_watchlist() -> pd.DataFrame:
     return sheets_db.read_df("watchlist_etfs")
 
+
 with st.spinner("Loading your data..."):
+    p1_holdings = load_holdings("portfolio1_positions")
+    p2_holdings = load_holdings("portfolio2_positions")
+    watchlist_df = load_watchlist()
+
     backtest_df = sheets_db.read_df("backtest_history")
+
     series_options = {}
 
-    for tab_name, label in PORTFOLIO_LABELS.items():
-        holdings = load_holdings(tab_name)
-        if holdings or not backtest_df[backtest_df["portfolio"] == label].empty:
-            series_options[label] = compute_portfolio_index(tab_name, label, holdings)
+    if p1_holdings or not backtest_df[backtest_df["portfolio"] == PORTFOLIO_LABELS["portfolio1_positions"]].empty:
+        series_options[PORTFOLIO_LABELS["portfolio1_positions"]] = compute_portfolio_index(
+            "portfolio1_positions", PORTFOLIO_LABELS["portfolio1_positions"], p1_holdings
+        )
 
-    watchlist_df = load_watchlist()
+    if p2_holdings or not backtest_df[backtest_df["portfolio"] == PORTFOLIO_LABELS["portfolio2_positions"]].empty:
+        series_options[PORTFOLIO_LABELS["portfolio2_positions"]] = compute_portfolio_index(
+            "portfolio2_positions", PORTFOLIO_LABELS["portfolio2_positions"], p2_holdings
+        )
+
     if not watchlist_df.empty:
         watchlist_prices = data_fetch.get_watchlist_prices(watchlist_df)
         series_options.update(watchlist_prices)
-
-    # Sort series_options based on saved display order
-    order_map = sheets_db.get_display_order()
-    sorted_keys = sorted(series_options.keys(), key=lambda x: order_map.get(x, 9999))
-    series_options = {k: series_options[k] for k in sorted_keys}
 
 if not series_options:
     st.info(
@@ -172,18 +162,27 @@ if not series_options:
     )
     st.stop()
 
-@st.fragment(run_every=timedelta(minutes=5))
+# --- Chart + comparison table ---
+# Wrapped in @st.fragment: Streamlit normally reruns the ENTIRE script
+# top-to-bottom on every widget interaction. A fragment scopes the rerun 
+# to just this function: changing the dropdown below now only re-runs 
+# this chart/table code, and the data-loading block above it does not 
+# execute again at all.
+@st.fragment
 def render_dashboard(series_options: dict):
     st.subheader("Performance chart")
     
+    # Use columns to put the dropdown and the time period selector side-by-side
     col1, col2 = st.columns([3, 2])
     with col1:
         choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
     with col2:
+        # Native Streamlit selector for time periods.
+        # This forces a Python rerun, recalculating and rescaling the Y-axis perfectly.
         period = st.radio(
             "Period",
             options=["5D", "1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "Max"],
-            index=8,
+            index=8,  # Default to "Max"
             horizontal=True,
             key="period_selector"
         )
@@ -194,6 +193,8 @@ def render_dashboard(series_options: dict):
         st.warning("No price data available yet for this selection.")
     else:
         chart_series = chart_series.dropna()
+        
+        # Determine the start date based on the selected period
         last_date = chart_series.index.max()
         
         if period == "5D":
@@ -212,14 +213,16 @@ def render_dashboard(series_options: dict):
             start_date = last_date - pd.DateOffset(years=3)
         elif period == "5Y":
             start_date = last_date - pd.DateOffset(years=5)
-        else:
+        else:  # Max
             start_date = chart_series.index.min()
 
+        # Filter the series to the selected period
         view_series = chart_series[chart_series.index >= start_date]
 
         if len(view_series) < 2:
             st.warning(f"Not enough data to display for the selected {period} period.")
         else:
+            # Rebase the series to 0% at the start of the selected window
             rebased_series = (view_series / view_series.iloc[0] - 1) * 100
 
             fig = go.Figure()
@@ -234,35 +237,31 @@ def render_dashboard(series_options: dict):
                 yaxis_title="Total return (%)",
                 margin=dict(l=10, r=10, t=30, b=10),
                 height=450,
-                dragmode=False,
-                hovermode="x",
+                dragmode=False, # Disables dragging/panning on the chart
             )
             
-            fig.update_xaxes(showspikes=True, spikethickness=1, spikecolor="gray", spikemode="across")
-            fig.update_yaxes(showspikes=True, spikethickness=1, spikecolor="gray", spikemode="across")
-            
+            # Configuration to lock the chart down for mobile
             plotly_config = {
-                'displayModeBar': False,
+                'displayModeBar': False, # Hides the Plotly hover toolbar
                 'displaylogo': False,
-                'scrollZoom': False,     
-                'doubleClick': 'reset',  
+                'scrollZoom': False,     # Prevents scroll wheel/touch zoom
+                'doubleClick': 'reset',  # Prevents double tap zoom glitches
             }
             
             st.plotly_chart(fig, use_container_width=True, config=plotly_config)
 
     st.subheader("Comparison table")
+    today = pd.Timestamp(date.today())
     rows = []
     for label, s in series_options.items():
         if s.dropna().empty:
             continue
-        last_trading_day = s.dropna().index.max() 
-        row = returns.comparison_row(s, last_trading_day)
+        row = returns.comparison_row(s, today)
         row["Name"] = label
         rows.append(row)
 
     if rows:
         table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "1Y"]]
-        table_df.index.name = None  # Removes the "Name" header above the portfolio names
 
         def color_pct(v):
             if pd.isna(v):
@@ -270,8 +269,9 @@ def render_dashboard(series_options: dict):
             return f"color: {'#0a7a2f' if v >= 0 else '#c02020'}"
 
         styled = table_df.style.format("{:+.2f}%", na_rep="—").map(color_pct)
-        st.table(styled)
+        st.dataframe(styled, use_container_width=True)
     else:
         st.info("Not enough data yet to build the comparison table.")
+
 
 render_dashboard(series_options)
