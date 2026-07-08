@@ -36,16 +36,42 @@ st.markdown(
             margin-bottom: 2rem;
         }
         
-        /* --- DATAFRAME NATIVE FIXES --- */
-        /* Left-align the first column (Portfolio names) */
-        [data-testid="stDataFrame"] th:first-child,
-        [data-testid="stDataFrame"] td:first-child {
-            text-align: left !important;
+        /* --- MOBILE TABLE FIXES --- */
+        [data-testid="stDataFrame"] {
+            max-width: 100% !important;
+            overflow: hidden !important; 
         }
-        /* Center the numeric columns */
-        [data-testid="stDataFrame"] th:not(:first-child),
-        [data-testid="stDataFrame"] td:not(:first-child) {
+        [data-testid="stDataFrame"] th, 
+        [data-testid="stDataFrame"] td {
+            word-break: break-word !important;
+            white-space: normal !important;
+            min-width: 40px !important;
+        }
+        @media (max-width: 768px) {
+            .block-container {
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+            }
+        }
+        
+        /* --- STATIC TABLE FIXES --- */
+        [data-testid="stTable"] {
+            width: 100% !important;
+        }
+        /* Center the numeric columns and prevent wrapping */
+        [data-testid="stTable"] th:not(:first-child), 
+        [data-testid="stTable"] td:not(:first-child) {
             text-align: center !important;
+            white-space: nowrap !important; 
+        }
+        /* Left-align names, cap width on PC, allow wrapping if too long */
+        [data-testid="stTable"] th:first-child,
+        [data-testid="stTable"] td:first-child {
+            text-align: left !important;
+            width: 40% !important;          
+            max-width: 250px !important;    /* Keeps the name part narrow on PC */
+            white-space: normal !important; 
+            word-break: break-word !important;
         }
     </style>
     """,
@@ -237,7 +263,7 @@ def render_dashboard(series_options: dict):
             return f"color: {'#0a7a2f' if v >= 0 else '#c02020'}"
 
         styled = table_df.style.format("{:+.2f}%", na_rep="—").map(color_pct)
-        st.dataframe(styled, use_container_width=True)
+        st.table(styled)
     else:
         st.info("Not enough data yet to build the comparison table.")
 
