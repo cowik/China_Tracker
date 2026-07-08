@@ -206,7 +206,6 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
     end_date = _get_last_trading_day()
     start_date = (datetime.now(BEIJING_TZ) - timedelta(days=3650)).strftime("%Y-%m-%d")
     
-    # Read from Google Sheets Cache
     cache_df = sheets_db.read_df("price_cache")
     results = {}
     missing_requests = []
@@ -242,7 +241,6 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
             
             if ticker in fetched_data and not fetched_data[ticker].empty:
                 df = fetched_data[ticker].copy()
-                # FIX: Keep date as datetime for the series index to prevent TypeError in returns.py
                 df["date"] = pd.to_datetime(df["date"])
                 df["close"] = pd.to_numeric(df["close"], errors="coerce")
                 df = df.dropna(subset=["close"])
@@ -252,7 +250,6 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
                     close_series = df.set_index("date")["close"]
                     results[label] = close_series / close_series.iloc[0]
                     
-                    # Format to string ONLY for appending to Google Sheets
                     for dt, price in zip(df["date"], df["close"]):
                         rows_to_append.append({"ticker": ticker, "asset_type": "etf", "date": dt.strftime("%Y-%m-%d"), "close": price})
                         
@@ -315,7 +312,6 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
         sheets_db.append_rows("price_cache", rows_to_append)
         sheets_db.clear_caches()
         
-    # Re-read from Google Sheets to get the perfectly combined history
     cache_df = sheets_db.read_df("price_cache")
     for h in holdings:
         ticker = _clean_ticker(h["ticker"])
