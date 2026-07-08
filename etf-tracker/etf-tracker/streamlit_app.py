@@ -58,19 +58,18 @@ st.markdown(
         [data-testid="stTable"] {
             width: 100% !important;
         }
-        /* Center the numeric columns */
+        /* Center the numeric columns and prevent wrapping */
         [data-testid="stTable"] th, 
         [data-testid="stTable"] td {
-            word-break: break-word !important;
-            white-space: normal !important;
             text-align: center !important;
+            white-space: nowrap !important; 
         }
-        /* Left-align names and fit width to the widest name */
+        /* Left-align names and auto-fit width to the longest name */
         [data-testid="stTable"] th:first-child,
         [data-testid="stTable"] td:first-child {
             text-align: left !important;
-            width: 1% !important;       /* Shrink/expand to fit content exactly */
-            white-space: nowrap !important; /* Prevent wrapping for clean alignment */
+            width: auto !important;         
+            white-space: nowrap !important; 
         }
     </style>
     """,
