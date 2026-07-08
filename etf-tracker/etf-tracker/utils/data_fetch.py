@@ -6,7 +6,7 @@ Data fetching with persistent local SQLite cache.
 """
 from __future__ import annotations
 import time
-import random
+import random1
 import sqlite3
 import os
 from datetime import datetime, timedelta
@@ -16,7 +16,6 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 import pytz
-import efinance as ef
 
 from utils import sheets_db
 
@@ -64,15 +63,6 @@ def _to_yfinance_ticker(ticker: str) -> str:
     if not ticker:
         return ticker
     return f"{ticker}.SS" if ticker[0] in ("5", "6") else f"{ticker}.SZ"
-
-def _fetch_etf_history_efinance(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """Fetch ETF history using efinance (Eastmoney). 
-    fqt=1 means forward-adjusted (handles splits/dividends correctly)."""
-    try:
-        # efinance takes the raw 6-digit ticker
-        df = ef.stock.get_quote_history(ticker, klt=101, fqt=1)
-        if df is None or df.empty:
-            return pd.DataFrame()
         
         # Clean up columns
         df = df[['日期', '收盘']].copy()
@@ -180,25 +170,44 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
     import baostock as bs
     results = {}
     
-    stock_reqs = [(t, at, s, e) for t, at, s, e in requests if at == "stock"]
-    etf_reqs = [(t, at, s, e) for t, at, s, e in requests if at != "stock"]
-    
+    if not requests:
+        return results
+        
     session_ok = False
-    if stock_reqs:
-        try:
-            lg = bs.login()
-            session_ok = lg is not None and lg.error_code == "0"
+    try:
+        lg = bs.login()
+        session_ok = lg is not None and lg.error_code == "0"
+        
+        for ticker, asset_type, start_date, end_date in requests:
+            bs_ticker = _to_baostock_ticker(ticker)
+            df = pd.DataFrame()
             
-            for ticker, asset_type, start_date, end_date in stock_reqs:
-                bs_ticker = _to_baostock_ticker(ticker)
-                df = pd.DataFrame()
+            # Try BaoStock adjustflag="2" (forward adjusted for splits/dividends)
+            try:
+                rs = bs.query_history_k_data_plus(
+                    bs_ticker, "date,close",
+                    start_date=start_date, end_date=end_date,
+                    frequency="d", adjustflag="2",
+                )
+                if rs.error_code == "0":
+                    data_list = []
+                    while rs.next():
+                        data_list.append(rs.get_row_data())
+                    if data_list:
+                        df = pd.DataFrame(data_list, columns=rs.fields)
+                        df["date"] = pd.to_datetime(df["date"])
+                        df["close"] = pd.to_numeric(df["close"], errors="coerce")
+                        df = df.dropna(subset=["close"])[["date", "close"]]
+            except Exception:
+                pass
                 
-                # Try adjustflag="2"
+            # Try BaoStock adjustflag="3" if empty
+            if df.empty:
                 try:
                     rs = bs.query_history_k_data_plus(
                         bs_ticker, "date,close",
                         start_date=start_date, end_date=end_date,
-                        frequency="d", adjustflag="2",
+                        frequency="d", adjustflag="3",
                     )
                     if rs.error_code == "0":
                         data_list = []
@@ -212,51 +221,21 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
                 except Exception:
                     pass
                     
-                # Try adjustflag="3" if empty
-                if df.empty:
-                    try:
-                        rs = bs.query_history_k_data_plus(
-                            bs_ticker, "date,close",
-                            start_date=start_date, end_date=end_date,
-                            frequency="d", adjustflag="3",
-                        )
-                        if rs.error_code == "0":
-                            data_list = []
-                            while rs.next():
-                                data_list.append(rs.get_row_data())
-                            if data_list:
-                                df = pd.DataFrame(data_list, columns=rs.fields)
-                                df["date"] = pd.to_datetime(df["date"])
-                                df["close"] = pd.to_numeric(df["close"], errors="coerce")
-                                df = df.dropna(subset=["close"])[["date", "close"]]
-                    except Exception:
-                        pass
-                        
-                # Fallback to yfinance if still empty
-                if df.empty:
-                    yf_ticker = _to_yfinance_ticker(ticker)
-                    df = _retry_download_yfinance(yf_ticker, start_date, end_date)
-                    
-                if not df.empty:
-                    results[ticker] = df
-                    
-        except Exception:
-            pass
-        finally:
-            if session_ok:
-                bs.logout()
+            # Fallback to yfinance if BaoStock fails completely
+            if df.empty:
+                yf_ticker = _to_yfinance_ticker(ticker)
+                df = _retry_download_yfinance(yf_ticker, start_date, end_date)
                 
-    # Handle ETFs (Try efinance first for accurate split adjustments, fallback to yfinance)
-    for ticker, asset_type, start_date, end_date in etf_reqs:
-        df = _fetch_etf_history_efinance(ticker, start_date, end_date)
-        
-        # Fallback to yfinance if efinance fails
-        if df.empty:
-            yf_ticker = _to_yfinance_ticker(ticker)
-            df = _retry_download_yfinance(yf_ticker, start_date, end_date)
+            if not df.empty:
+                results[ticker] = df
+                
+    except Exception:
+        pass
+    finally:
+        if session_ok:
+            bs.logout()
             
-        if not df.empty:
-            results[ticker] = df
+    return results
             
 # --------------------------------------------------------------- batch watchlist --
 @st.cache_data(ttl=300, show_spinner=False)
@@ -309,30 +288,26 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
         missing_labels.append(labels[i])
         missing_yf_tickers.append(yf_tickers[i])
         
-    if missing_tickers:
+    if missing_requests:
+        fetched_data = _fetch_missing_data_batch(missing_requests)
+        
         rows_to_write = []
-        for i, t in enumerate(missing_tickers):
+        for i, req in enumerate(missing_requests):
+            ticker = req[0]
             label = missing_labels[i]
             
-            # Try efinance first
-            df = _fetch_etf_history_efinance(t, start_date, end_date)
-            
-            # Fallback to yfinance
-            if df.empty:
-                yf_ticker = _to_yfinance_ticker(t)
-                df = _retry_download_yfinance(yf_ticker, start_date, end_date)
+            if ticker in fetched_data and not fetched_data[ticker].empty:
+                df = fetched_data[ticker]
                 
-            if not df.empty:
-                close_series = df.set_index('date')['close']
-                results[label] = close_series / close_series.iloc[0]
+                # Filter out intraday data to sync with 17:30 BaoStock rule
+                df = df[df['date'].dt.normalize() <= pd.Timestamp(end_date)]
                 
-                if close_series.index.tz is not None:
-                    close_series.index = close_series.index.tz_localize(None)
+                if not df.empty:
+                    close_series = df.set_index('date')['close']
+                    results[label] = close_series / close_series.iloc[0]
                     
-                for dt, price in close_series.items():
-                    # Filter out intraday data to sync with 17:30 rule
-                    if dt.normalize() <= pd.Timestamp(end_date):
-                        rows_to_write.append((t, 'etf', dt.strftime("%Y-%m-%d"), float(price)))
+                    for dt, price in close_series.items():
+                        rows_to_write.append((ticker, 'etf', dt.strftime("%Y-%m-%d"), float(price)))
                         
         if rows_to_write:
             conn.executemany(
