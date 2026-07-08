@@ -1,8 +1,3 @@
-"""
-Data fetching with persistent local SQLite cache.
-- Stocks: BaoStock (adjustflag='2') -> yfinance fallback.
-- ETFs: yfinance only.
-"""
 from __future__ import annotations
 import time
 import random
@@ -20,9 +15,7 @@ from utils import sheets_db
 
 BEIJING_TZ = pytz.timezone("Asia/Shanghai")
 
-# ----------------------------------------------------------------- SQLite Cache --
 def _get_db_conn():
-    """Returns a fresh SQLite connection. Ensures table exists and WAL mode is enabled."""
     os.makedirs("data", exist_ok=True)
     conn = sqlite3.connect("data/prices.db", check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -38,7 +31,6 @@ def _get_db_conn():
     conn.commit()
     return conn
 
-# ---------------------------------------------------------------- helpers --
 def _now_beijing() -> datetime:
     return datetime.now(BEIJING_TZ)
 
@@ -66,10 +58,7 @@ def _to_yfinance_ticker(ticker: str) -> str:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _get_last_trading_day() -> str:
-    """Cached — only computed once per 5 minutes."""
     now_beijing = _now_beijing()
-    
-    # BaoStock delay: Daily closing data isn't available until ~17:30 Beijing time.
     cutoff_time = now_beijing.replace(hour=17, minute=30, second=0, microsecond=0)
     if now_beijing < cutoff_time:
         now_beijing -= timedelta(days=1)
@@ -101,7 +90,6 @@ def _get_last_trading_day() -> str:
         dt -= timedelta(days=1)
     return dt.strftime("%Y-%m-%d")
 
-# ------------------------------------------------------------ raw fetchers --
 def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) -> pd.DataFrame:
     try:
         end_date_exclusive = (pd.Timestamp(end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
@@ -110,11 +98,7 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
         
     for attempt in range(retries):
         try:
-            df = yf.download(
-                ticker_yf, start=start, end=end_date_exclusive,
-                progress=False, timeout=15,
-                auto_adjust=True,
-            )
+            df = yf.download(ticker_yf, start=start, end=end_date_exclusive, progress=False, timeout=15, auto_adjust=True)
             if df.empty:
                 return pd.DataFrame()
             
@@ -131,8 +115,6 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
             out = close.reset_index()
             out.columns = ["date", "close"]
             out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None)
-            
-            # Filter out intraday data to sync with 17:30 BaoStock rule
             out = out[out["date"].dt.normalize() <= pd.Timestamp(end)]
             return out
         except Exception:
@@ -143,7 +125,6 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
     return pd.DataFrame()
 
 def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict[str, pd.DataFrame]:
-    """Fetch multiple tickers using a single BaoStock session for stocks, yfinance for ETFs."""
     import baostock as bs
     results = {}
     
@@ -164,11 +145,7 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
                 df = pd.DataFrame()
                 
                 try:
-                    rs = bs.query_history_k_data_plus(
-                        bs_ticker, "date,close",
-                        start_date=start_date, end_date=end_date,
-                        frequency="d", adjustflag="2",
-                    )
+                    rs = bs.query_history_k_data_plus(bs_ticker, "date,close", start_date=start_date, end_date=end_date, frequency="d", adjustflag="2")
                     if rs.error_code == "0":
                         data_list = []
                         while rs.next():
@@ -183,11 +160,7 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
                     
                 if df.empty:
                     try:
-                        rs = bs.query_history_k_data_plus(
-                            bs_ticker, "date,close",
-                            start_date=start_date, end_date=end_date,
-                            frequency="d", adjustflag="3",
-                        )
+                        rs = bs.query_history_k_data_plus(bs_ticker, "date,close", start_date=start_date, end_date=end_date, frequency="d", adjustflag="3")
                         if rs.error_code == "0":
                             data_list = []
                             while rs.next():
@@ -215,20 +188,17 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
     for ticker, asset_type, start_date, end_date in etf_reqs:
         yf_ticker = _to_yfinance_ticker(ticker)
         df = _retry_download_yfinance(yf_ticker, start_date, end_date)
-            
         if not df.empty:
             results[ticker] = df
             
     return results
 
-# --------------------------------------------------------------- batch watchlist --
 @st.cache_data(ttl=300, show_spinner=False)
 def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
     if watchlist_df.empty:
         return {}
         
     conn = _get_db_conn()
-    
     tickers = []
     labels = []
     for _, row in watchlist_df.iterrows():
@@ -251,10 +221,7 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
     missing_requests = []
     
     for i, t in enumerate(tickers):
-        df_cache = pd.read_sql(
-            "SELECT date, close FROM price_cache WHERE ticker=? AND asset_type='etf'",
-            conn, params=[t]
-        )
+        df_cache = pd.read_sql("SELECT date, close FROM price_cache WHERE ticker=? AND asset_type='etf'", conn, params=[t])
         if not df_cache.empty:
             df_cache["date"] = pd.to_datetime(df_cache["date"])
             s = df_cache.sort_values("date").set_index("date")["close"]
@@ -270,47 +237,35 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
         
     if missing_requests:
         fetched_data = _fetch_missing_data_batch(missing_requests)
-        
         rows_to_write = []
         for i, req in enumerate(missing_requests):
             ticker = req[0]
             label = missing_labels[i]
-            
             if ticker in fetched_data and not fetched_data[ticker].empty:
                 df = fetched_data[ticker]
                 df = df[df['date'].dt.normalize() <= pd.Timestamp(end_date)]
-                
                 if not df.empty:
                     close_series = df.set_index('date')['close']
                     results[label] = close_series / close_series.iloc[0]
-                    
                     for dt, price in close_series.items():
                         rows_to_write.append((ticker, 'etf', dt.strftime("%Y-%m-%d"), float(price)))
                         
         if rows_to_write:
-            conn.executemany(
-                "INSERT OR REPLACE INTO price_cache (ticker, asset_type, date, close) VALUES (?, ?, ?, ?)",
-                rows_to_write
-            )
+            conn.executemany("INSERT OR REPLACE INTO price_cache (ticker, asset_type, date, close) VALUES (?, ?, ?, ?)", rows_to_write)
             conn.commit()
             
     conn.close()
     return results
 
-# ------------------------------------------------------------------ public --
 @st.cache_data(ttl=300, show_spinner=False)
 def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     conn = _get_db_conn()
-    
     tickers = [_clean_ticker(h["ticker"]) for h in holdings]
     if not tickers:
         return {}
         
     placeholders = ','.join(['?'] * len(tickers))
-    df_cache = pd.read_sql(
-        f"SELECT ticker, asset_type, date, close FROM price_cache WHERE ticker IN ({placeholders})",
-        conn, params=tickers
-    )
+    df_cache = pd.read_sql(f"SELECT ticker, asset_type, date, close FROM price_cache WHERE ticker IN ({placeholders})", conn, params=tickers)
     
     end_fetch = _get_last_trading_day()
     missing_requests = []
@@ -331,7 +286,6 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
             cached["date"] = pd.to_datetime(cached["date"])
             cached_series = cached.sort_values("date").set_index("date")["close"]
             results[ticker] = cached_series
-            
             max_cached_date = cached_series.index.max()
             start_fetch = (max_cached_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
             if start_fetch <= end_fetch:
@@ -344,6 +298,46 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
         return results
         
     fetched_data = _fetch_missing_data_batch(missing_requests)
-    
     rows_to_write = []
-    for ticker, asset
+    for ticker, asset_type, _, _ in missing_requests:
+        if ticker in fetched_data and not fetched_data[ticker].empty:
+            df = fetched_data[ticker].copy()
+            df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+            df["close"] = pd.to_numeric(df["close"], errors="coerce")
+            df = df.dropna(subset=["close"])
+            for dt, price in zip(df["date"], df["close"]):
+                rows_to_write.append((ticker, asset_type, dt, float(price)))
+                
+    if rows_to_write:
+        conn.executemany("INSERT OR REPLACE INTO price_cache (ticker, asset_type, date, close) VALUES (?, ?, ?, ?)", rows_to_write)
+        conn.commit()
+        
+    df_cache = pd.read_sql(f"SELECT ticker, asset_type, date, close FROM price_cache WHERE ticker IN ({placeholders})", conn, params=tickers)
+    conn.close()
+    
+    for h in holdings:
+        ticker = _clean_ticker(h["ticker"])
+        asset_type = h.get("asset_type", "stock")
+        if not df_cache.empty:
+            mask = (df_cache["ticker"] == ticker) & (df_cache["asset_type"] == asset_type)
+            cached = df_cache[mask]
+            if not cached.empty:
+                cached["date"] = pd.to_datetime(cached["date"])
+                results[ticker] = cached.sort_values("date").set_index("date")["close"]
+                
+    return results
+
+def get_stock_hist(ticker: str, start_date: str = "1990-01-01", end_date: str = "2050-01-01") -> pd.DataFrame:
+    s = get_prices_batch([{"ticker": ticker, "asset_type": "stock", "inception_date": start_date}]).get(ticker)
+    if s is None or s.empty:
+        return pd.DataFrame()
+    return s.reset_index().rename(columns={"index": "date"})
+
+def get_etf_hist(ticker: str, start_date: str = "1990-01-01", end_date: str = "2050-01-01") -> pd.DataFrame:
+    s = get_prices_batch([{"ticker": ticker, "asset_type": "etf", "inception_date": start_date}]).get(ticker)
+    if s is None or s.empty:
+        return pd.DataFrame()
+    return s.reset_index().rename(columns={"index": "date"})
+
+def get_dividends(ticker: str, asset_type: str) -> pd.DataFrame:
+    return pd.DataFrame()
