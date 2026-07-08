@@ -72,6 +72,10 @@ st.markdown(
             width: 1% !important;       /* Shrink/expand to fit content exactly */
             white-space: nowrap !important; /* Prevent wrapping for clean alignment */
         }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.title("📈 China Portfolio & ETF Tracker")
 st.caption(
@@ -251,7 +255,7 @@ def render_dashboard(series_options: dict):
     if rows:
         table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "1Y"]]
         table_df.index.name = None  # Removes the "Name" header above the portfolio names
-        
+
         def color_pct(v):
             if pd.isna(v):
                 return ""
