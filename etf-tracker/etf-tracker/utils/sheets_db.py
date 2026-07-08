@@ -14,6 +14,7 @@ SCOPES = [
 ]
 
 SHEET_SCHEMAS = {
+    "portfolios_meta": ["tab_name", "label"],
     "portfolio1_positions": ["ticker", "name", "asset_type", "weight", "purchase_date"],
     "portfolio2_positions": ["ticker", "name", "asset_type", "weight", "purchase_date"],
     "watchlist_etfs": ["ticker", "name"],
@@ -84,7 +85,7 @@ def write_df(tab_name: str, df: pd.DataFrame) -> None:
                 df[col] = df[col].astype(str).str.strip()
         rows = df.astype(object).where(pd.notnull(df), "").values.tolist()
         try:
-            ws.append_rows(rows, value_input_option="USER_ENTERED")
+            ws.update([df.columns.values.tolist()] + df.values.tolist())
         except Exception as e:
             st.error(f"Failed to save data to Google Sheets: {e}")
             raise
@@ -102,11 +103,7 @@ def append_rows(tab_name: str, rows: list[dict]) -> None:
         raise
 
 def clear_caches():
-    """Clear cached Sheet reads so freshly-saved rows show up right away.
-    Scoping this to just `read_df` means position/watchlist/backtest edits
-    are picked up immediately, without touching data_fetch's price caches.
-    """
-    read_df.clear()
+    st.cache_data.clear()
 
 def get_rebalance_frequency(portfolio_label: str) -> str:
     df = read_df("portfolio_settings")
@@ -122,4 +119,57 @@ def save_rebalance_frequency(portfolio_label: str, frequency: str) -> None:
     df = df[df["portfolio"] != portfolio_label]
     df = pd.concat([df, pd.DataFrame([{"portfolio": portfolio_label, "rebalance_frequency": frequency}])], ignore_index=True)
     write_df("portfolio_settings", df)
+    clear_caches()
+
+# --------------------------------------------------------------- dynamic portfolios --
+def get_portfolios() -> dict[str, str]:
+    """Returns {tab_name: label}. Migrates hardcoded ones if table is empty."""
+    df = read_df("portfolios_meta")
+    if df.empty:
+        # Initialize with existing hardcoded portfolios
+        df = pd.DataFrame([
+            {"tab_name": "portfolio1_positions", "label": "Возможности Китая"},
+            {"tab_name": "portfolio2_positions", "label": "Возможности Китая. Специальная 2"}
+        ])
+        write_df("portfolios_meta", df)
+        clear_caches()
+    return dict(zip(df["tab_name"], df["label"]))
+
+def add_portfolio(label: str) -> str:
+    df = read_df("portfolios_meta")
+    existing_nums = [int(t.replace("portfolio", "").replace("_positions", "")) for t in df["tab_name"] if t.startswith("portfolio") and t.endswith("_positions")]
+    next_num = max(existing_nums) + 1 if existing_nums else 1
+    tab_name = f"portfolio{next_num}_positions"
+    
+    new_row = pd.DataFrame([{"tab_name": tab_name, "label": label}])
+    df = pd.concat([df, new_row], ignore_index=True)
+    write_df("portfolios_meta", df)
+    _get_or_create_worksheet(tab_name) # Create the empty sheet
+    clear_caches()
+    return tab_name
+
+def delete_portfolio(tab_name: str, label: str) -> None:
+    df = read_df("portfolios_meta")
+    df = df[df["tab_name"] != tab_name]
+    write_df("portfolios_meta", df)
+    
+    # Delete the worksheet
+    try:
+        ss = _get_spreadsheet()
+        ws = ss.worksheet(tab_name)
+        ss.del_worksheet(ws)
+    except Exception:
+        pass
+        
+    # Clean up backtest history & settings
+    bt = read_df("backtest_history")
+    if not bt.empty:
+        bt = bt[bt["portfolio"] != label]
+        write_df("backtest_history", bt)
+        
+    settings = read_df("portfolio_settings")
+    if not settings.empty:
+        settings = settings[settings["portfolio"] != label]
+        write_df("portfolio_settings", settings)
+        
     clear_caches()
