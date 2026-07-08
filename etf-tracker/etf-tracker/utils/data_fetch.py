@@ -46,7 +46,7 @@ def _to_yfinance_ticker(ticker: str) -> str:
         return ticker
     return f"{ticker}.SS" if ticker[0] in ("5", "6") else f"{ticker}.SZ"
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _get_last_trading_day() -> str:
     now_beijing = _now_beijing()
     cutoff_time = now_beijing.replace(hour=17, minute=30, second=0, microsecond=0)
@@ -185,7 +185,7 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
     return results
 
 # --------------------------------------------------------------- batch watchlist --
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
     if watchlist_df.empty:
         return {}
@@ -264,7 +264,7 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
     return results
 
 # ------------------------------------------------------------------ public --
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     cache_df = sheets_db.read_df("price_cache")
     end_fetch = _get_last_trading_day()
