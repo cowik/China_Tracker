@@ -36,40 +36,16 @@ st.markdown(
             margin-bottom: 2rem;
         }
         
-        /* --- MOBILE TABLE FIXES --- */
-        [data-testid="stDataFrame"] {
-            max-width: 100% !important;
-            overflow: hidden !important; 
-        }
-        [data-testid="stDataFrame"] th, 
-        [data-testid="stDataFrame"] td {
-            word-break: break-word !important;
-            white-space: normal !important;
-            min-width: 40px !important;
-        }
-        @media (max-width: 768px) {
-            .block-container {
-                padding-left: 1rem !important;
-                padding-right: 1rem !important;
-            }
-        }
-        
-        /* --- STATIC TABLE FIXES --- */
-        [data-testid="stTable"] {
-            width: 100% !important;
-        }
-        /* Center the numeric columns and prevent wrapping */
-        [data-testid="stTable"] th, 
-        [data-testid="stTable"] td {
-            text-align: center !important;
-            white-space: nowrap !important; 
-        }
-        /* Left-align names and auto-fit width to the longest name */
-        [data-testid="stTable"] th:first-child,
-        [data-testid="stTable"] td:first-child {
+        /* --- DATAFRAME NATIVE FIXES --- */
+        /* Left-align the first column (Portfolio names) */
+        [data-testid="stDataFrame"] th:first-child,
+        [data-testid="stDataFrame"] td:first-child {
             text-align: left !important;
-            width: auto !important;         
-            white-space: nowrap !important; 
+        }
+        /* Center the numeric columns */
+        [data-testid="stDataFrame"] th:not(:first-child),
+        [data-testid="stDataFrame"] td:not(:first-child) {
+            text-align: center !important;
         }
     </style>
     """,
@@ -261,7 +237,7 @@ def render_dashboard(series_options: dict):
             return f"color: {'#0a7a2f' if v >= 0 else '#c02020'}"
 
         styled = table_df.style.format("{:+.2f}%", na_rep="—").map(color_pct)
-        st.table(styled)
+        st.dataframe(styled, use_container_width=True)
     else:
         st.info("Not enough data yet to build the comparison table.")
 
