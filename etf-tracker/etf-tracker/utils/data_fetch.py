@@ -157,26 +157,9 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
     if not requests:
         return results
         
-    stock_reqs = []
-    etf_reqs = []
+    stock_reqs = [(t, at, s, e) for t, at, s, e in requests if at == "stock"]
+    etf_reqs = [(t, at, s, e) for t, at, s, e in requests if at != "stock"]
     
-    # FIX: Force tickers starting with 1 or 5 to use the ETF path (yfinance)
-    # This guarantees full 10-year history even if asset_type was left as 'stock'
-    for t, at, s, e in requests:
-        clean_t = _clean_ticker(t)
-        if at == "etf" or (clean_t and clean_t[0] in ("1", "5")):
-            etf_reqs.append((t, at, s, e))
-        else:
-            stock_reqs.append((t, at, s, e))
-    
-    # --- Fetch ETFs (yfinance) ---
-    for ticker, asset_type, start_date, end_date in etf_reqs:
-        yf_ticker = _to_yfinance_ticker(ticker)
-        df = _retry_download_yfinance(yf_ticker, start_date, end_date)
-            
-        if not df.empty:
-            results[ticker] = df
-            
     # --- Fetch Stocks (BaoStock) ---
     session_ok = False
     if stock_reqs:
@@ -237,6 +220,14 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
             if session_ok:
                 bs.logout()
                 
+    # --- Fetch ETFs (yfinance) ---
+    for ticker, asset_type, start_date, end_date in etf_reqs:
+        yf_ticker = _to_yfinance_ticker(ticker)
+        df = _retry_download_yfinance(yf_ticker, start_date, end_date)
+            
+        if not df.empty:
+            results[ticker] = df
+            
     return results
 
 # --------------------------------------------------------------- batch watchlist --
