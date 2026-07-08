@@ -58,18 +58,16 @@ st.markdown(
         [data-testid="stTable"] {
             width: 100% !important;
         }
-        /* Center the numeric columns and prevent wrapping */
         [data-testid="stTable"] th:not(:first-child), 
         [data-testid="stTable"] td:not(:first-child) {
             text-align: center !important;
             white-space: nowrap !important; 
         }
-        /* Left-align names, cap width on PC, allow wrapping if too long */
         [data-testid="stTable"] th:first-child,
         [data-testid="stTable"] td:first-child {
             text-align: left !important;
             width: 40% !important;          
-            max-width: 250px !important;    /* Keeps the name part narrow on PC */
+            max-width: 250px !important;
             white-space: normal !important; 
             word-break: break-word !important;
         }
@@ -255,7 +253,7 @@ def render_dashboard(series_options: dict):
 
     if rows:
         table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "1Y"]]
-        table_df.index.name = None  # Removes the "Name" header above the portfolio names
+        table_df.index.name = None
 
         def color_pct(v):
             if pd.isna(v):
