@@ -1,8 +1,7 @@
 """
 Data fetching with persistent local SQLite cache.
-- Stocks: BaoStock (adjustflag='2') -> BaoStock unadjusted -> yfinance.
+- Stocks: BaoStock (adjustflag='2') -> yfinance fallback.
 - ETFs: yfinance only.
-- Uses batch fetching to minimize BaoStock login/logout cycles.
 """
 from __future__ import annotations
 import time
@@ -22,10 +21,11 @@ from utils import sheets_db
 BEIJING_TZ = pytz.timezone("Asia/Shanghai")
 
 # ----------------------------------------------------------------- SQLite Cache --
-@st.cache_resource(show_spinner=False)
 def _get_db_conn():
+    """Returns a fresh SQLite connection. Ensures table exists and WAL mode is enabled."""
     os.makedirs("data", exist_ok=True)
     conn = sqlite3.connect("data/prices.db", check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS price_cache (
             ticker TEXT,
@@ -138,7 +138,7 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
             out.columns = ["date", "close"]
             out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None)
             
-            # --- ADD THIS LINE: Filter out intraday data to sync with 17:30 BaoStock rule ---
+            # Filter out intraday data to sync with 17:30 BaoStock rule
             out = out[out["date"].dt.normalize() <= pd.Timestamp(end)]
             
             return out
@@ -150,13 +150,17 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
     return pd.DataFrame()
 
 def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict[str, pd.DataFrame]:
-    """Fetch multiple tickers using a single BaoStock session."""
+    """Fetch multiple tickers using a single BaoStock session for stocks, yfinance for ETFs."""
     import baostock as bs
     results = {}
     
+    if not requests:
+        return results
+        
     stock_reqs = [(t, at, s, e) for t, at, s, e in requests if at == "stock"]
     etf_reqs = [(t, at, s, e) for t, at, s, e in requests if at != "stock"]
     
+    # --- Fetch Stocks (BaoStock) ---
     session_ok = False
     if stock_reqs:
         try:
@@ -167,7 +171,6 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
                 bs_ticker = _to_baostock_ticker(ticker)
                 df = pd.DataFrame()
                 
-                # Try adjustflag="2"
                 try:
                     rs = bs.query_history_k_data_plus(
                         bs_ticker, "date,close",
@@ -186,7 +189,6 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
                 except Exception:
                     pass
                     
-                # Try adjustflag="3" if empty
                 if df.empty:
                     try:
                         rs = bs.query_history_k_data_plus(
@@ -206,24 +208,23 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
                     except Exception:
                         pass
                         
-                # Fallback to yfinance if still empty
                 if df.empty:
                     yf_ticker = _to_yfinance_ticker(ticker)
                     df = _retry_download_yfinance(yf_ticker, start_date, end_date)
                     
                 if not df.empty:
                     results[ticker] = df
-                    
         except Exception:
             pass
         finally:
             if session_ok:
                 bs.logout()
                 
-    # Handle ETFs
+    # --- Fetch ETFs (yfinance) ---
     for ticker, asset_type, start_date, end_date in etf_reqs:
         yf_ticker = _to_yfinance_ticker(ticker)
         df = _retry_download_yfinance(yf_ticker, start_date, end_date)
+            
         if not df.empty:
             results[ticker] = df
             
@@ -239,16 +240,13 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
     
     tickers = []
     labels = []
-    yf_tickers = []
     for _, row in watchlist_df.iterrows():
         ticker = str(row["ticker"]).strip()
         if not ticker:
             continue
         name = str(row.get("name", "")).strip() or ticker
-        yf_ticker = _to_yfinance_ticker(ticker)
         tickers.append(ticker)
         labels.append(f"{name} ({ticker})")
-        yf_tickers.append(yf_ticker)
         
     if not tickers:
         return {}
@@ -260,7 +258,7 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
     results = {}
     missing_tickers = []
     missing_labels = []
-    missing_yf_tickers = []
+    missing_requests = []
     
     for i, t in enumerate(tickers):
         df_cache = pd.read_sql(
@@ -278,67 +276,41 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
                     
         missing_tickers.append(t)
         missing_labels.append(labels[i])
-        missing_yf_tickers.append(yf_tickers[i])
+        missing_requests.append((t, 'etf', start_date, end_date))
         
-    if missing_yf_tickers:
-        try:
-            # yfinance uses EXCLUSIVE end dates. Add 1 day.
-            end_date_exclusive = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    if missing_requests:
+        fetched_data = _fetch_missing_data_batch(missing_requests)
+        
+        rows_to_write = []
+        for i, req in enumerate(missing_requests):
+            ticker = req[0]
+            label = missing_labels[i]
             
-            data = yf.download(
-                missing_yf_tickers, start=start_date, end=end_date_exclusive,
-                progress=False, timeout=30, group_by='ticker',
-                auto_adjust=True,
-            )
-            if data.empty:
-                return results
+            if ticker in fetched_data and not fetched_data[ticker].empty:
+                df = fetched_data[ticker]
                 
-            rows_to_write = []
-            for i, yf_t in enumerate(missing_yf_tickers):
-                label = missing_labels[i]
-                ticker = missing_tickers[i]
+                # Filter out intraday data to sync with 17:30 BaoStock rule
+                df = df[df['date'].dt.normalize() <= pd.Timestamp(end_date)]
                 
-                # Handle both single and multi-index columns safely
-                if isinstance(data.columns, pd.MultiIndex):
-                    if yf_t not in data.columns.get_level_values(0):
-                        continue
-                    sub = data[yf_t]
-                else:
-                    sub = data
+                if not df.empty:
+                    close_series = df.set_index('date')['close']
+                    results[label] = close_series / close_series.iloc[0]
                     
-                if 'Adj Close' in sub.columns:
-                    close = sub['Adj Close']
-                elif 'Close' in sub.columns:
-                    close = sub['Close']
-                else:
-                    continue
-                    
-                close = close.dropna()
-                if not close.empty:
-                    # --- ADD THIS LINE: Filter out intraday data to sync with 17:30 BaoStock rule ---
-                    close = close[close.index.normalize() <= pd.Timestamp(end_date)]
-                    
-                    if not close.empty:
-                        results[label] = close / close.iloc[0]
-                        if close.index.tz is not None:
-                            close.index = close.index.tz_localize(None)
-                        for dt, price in close.items():
-                            rows_to_write.append((ticker, 'etf', dt.strftime("%Y-%m-%d"), float(price)))
+                    for dt, price in close_series.items():
+                        rows_to_write.append((ticker, 'etf', dt.strftime("%Y-%m-%d"), float(price)))
                         
-            if rows_to_write:
-                conn.executemany(
-                    "INSERT OR REPLACE INTO price_cache (ticker, asset_type, date, close) VALUES (?, ?, ?, ?)",
-                    rows_to_write
-                )
-                conn.commit()
-                
-        except Exception as e:
-            st.warning(f"Batch yfinance fetch failed: {e}")
+        if rows_to_write:
+            conn.executemany(
+                "INSERT OR REPLACE INTO price_cache (ticker, asset_type, date, close) VALUES (?, ?, ?, ?)",
+                rows_to_write
+            )
+            conn.commit()
             
+    conn.close()
     return results
 
 # ------------------------------------------------------------------ public --
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     """
     Fetches prices for a list of holdings using a single BaoStock session 
@@ -384,6 +356,7 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
             missing_requests.append((ticker, asset_type, start_date, end_fetch))
             
     if not missing_requests:
+        conn.close()
         return results
         
     fetched_data = _fetch_missing_data_batch(missing_requests)
@@ -392,16 +365,13 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     for ticker, asset_type, _, _ in missing_requests:
         if ticker in fetched_data and not fetched_data[ticker].empty:
             df = fetched_data[ticker].copy()
-            # Coerce to numeric, any non‑numeric becomes NaN
+            # Ensure date is string and close is strictly numeric
+            df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
             df["close"] = pd.to_numeric(df["close"], errors="coerce")
-            # Drop rows where close is NaN (invalid data)
             df = df.dropna(subset=["close"])
-            for _, row in df.iterrows():
-                rows_to_write.append((
-                    ticker, asset_type,
-                    pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
-                    float(row["close"])   # now guaranteed to be a float
-                ))
+            
+            for dt, price in zip(df["date"], df["close"]):
+                rows_to_write.append((ticker, asset_type, dt, float(price)))
                 
     if rows_to_write:
         conn.executemany(
@@ -415,6 +385,7 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
         conn, params=tickers
     )
     
+    conn.close()
     for h in holdings:
         ticker = _clean_ticker(h["ticker"])
         asset_type = h.get("asset_type", "stock")
