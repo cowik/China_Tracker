@@ -12,7 +12,7 @@ st.title("🔧 Manage")
 # Fetch portfolios dynamically
 PORTFOLIOS = sheets_db.get_portfolios()
 
-sections = list(PORTFOLIOS.values()) + ["Watchlist ETFs", "Backtest history upload", "Manage Portfolios"]
+sections = list(PORTFOLIOS.values()) + ["Watchlist ETFs", "Backtest history upload", "Manage Portfolios", "Reorder Items"]
 section = st.sidebar.radio("Section", sections)
 
 POSITION_COLS = {
@@ -131,8 +131,8 @@ def positions_editor(tab_name: str, label: str):
                     existing = sheets_db.read_df("backtest_history")
                     if not existing.empty:
                         existing = existing[existing["portfolio"] != label]
-                    combined = pd.concat([existing, rebalance_df[["date", "portfolio", "index_value"]]], ignore_index=True)
-                    sheets_db.write_df("backtest_history", combined)
+                    combined_df = pd.concat([existing, rebalance_df[["date", "portfolio", "index_value"]]], ignore_index=True)
+                    sheets_db.write_df("backtest_history", combined_df)
                     sheets_db.clear_caches()
                     st.success(f"✅ Rebalance complete! {label} backtest now includes performance up to today.")
                     st.rerun()
@@ -231,11 +231,11 @@ elif section == "Backtest history upload":
                         })
                         new_data["date"] = pd.to_datetime(new_data["date"]).dt.strftime("%Y-%m-%d")
                         new_data["index_value"] = pd.to_numeric(new_data["index_value"], errors="coerce")
-                        combined = pd.concat([existing, new_data[["date", "portfolio", "index_value"]]], ignore_index=True)
-                        combined["index_value"] = combined["index_value"].apply(
+                        combined_df = pd.concat([existing, new_data[["date", "portfolio", "index_value"]]], ignore_index=True)
+                        combined_df["index_value"] = combined_df["index_value"].apply(
                             lambda x: f"{x:.8f}" if pd.notnull(x) else ""
                         )
-                        sheets_db.write_df("backtest_history", combined)
+                        sheets_db.write_df("backtest_history", combined_df)
                         sheets_db.clear_caches()
                         st.success("Backtest history saved.")
                         st.rerun()
@@ -246,7 +246,7 @@ elif section == "Backtest history upload":
 
 elif section == "Manage Portfolios":
     st.subheader("Manage Portfolios")
-    st.caption("Add new portfolios or delete existing ones._deleted portfolios cannot be recovered.")
+    st.caption("Add new portfolios or delete existing ones. Deleted portfolios cannot be recovered.")
     
     with st.form("add_portfolio_form"):
         new_label = st.text_input("New Portfolio Name")
@@ -264,4 +264,35 @@ elif section == "Manage Portfolios":
         if col2.button("Delete", key=f"del_{tab}"):
             sheets_db.delete_portfolio(tab, label)
             st.warning(f"Deleted {label}")
+            st.rerun()
+
+elif section == "Reorder Items":
+    st.subheader("Reorder Portfolios & ETFs")
+    st.caption("Set the display order for the main dashboard dropdown and comparison table.")
+    
+    all_items = list(PORTFOLIOS.values())
+    watchlist = sheets_db.read_df("watchlist_etfs")
+    if not watchlist.empty:
+        for _, row in watchlist.iterrows():
+            name = str(row.get("name", "")).strip() or row["ticker"]
+            all_items.append(f"{name} ({row['ticker']})")
+            
+    if not all_items:
+        st.info("No portfolios or ETFs found to reorder.")
+    else:
+        current_order = sheets_db.get_display_order()
+        order_list = [current_order.get(item, 99) for item in all_items]
+        df_order = pd.DataFrame({"Item": all_items, "Sort Order": order_list})
+        
+        edited = st.data_editor(
+            df_order, 
+            num_rows="fixed",
+            use_container_width=True,
+            key="order_editor"
+        )
+        
+        if st.button("Save Order"):
+            sorted_df = edited.sort_values("Sort Order")
+            sheets_db.save_display_order(sorted_df["Item"].tolist())
+            st.success("Display order saved!")
             st.rerun()
