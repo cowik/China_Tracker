@@ -62,7 +62,7 @@ def read_df(tab_name: str) -> pd.DataFrame:
             df[col] = df[col].str.replace(r'[^\d]', '', regex=True)
             df[col] = df[col].apply(lambda x: x.zfill(6) if x.isdigit() else x)
             
-    # Clean numeric columns that might be saved as text with commas/dots
+    # FIX: Clean numeric columns that might be saved as text with commas/dots
     for col in ["index_value", "weight"]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace(",", ".", regex=False)
@@ -81,7 +81,6 @@ def write_df(tab_name: str, df: pd.DataFrame) -> None:
             ws.append_row(headers)
         return
 
-    # Make a copy to avoid modifying the original dataframe
     df = df.copy()
     
     # 1. Sanitize all columns into clean strings/floats before sending
@@ -209,6 +208,4 @@ def get_display_order() -> dict[str, int]:
     return dict(zip(df["label"], df["sort_order"]))
 
 def save_display_order(labels: list[str]) -> None:
-    df = pd.DataFrame({"label": labels, "sort_order": range(1, len(labels) + 1)})
-    write_df("display_order", df)
-    clear_caches()
+    df = pd.DataFrame
