@@ -58,16 +58,20 @@ st.markdown(
         [data-testid="stTable"] {
             width: 100% !important;
         }
+        /* Center the numeric columns */
         [data-testid="stTable"] th, 
         [data-testid="stTable"] td {
             word-break: break-word !important;
             white-space: normal !important;
             text-align: center !important;
         }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+        /* Left-align names and fit width to the widest name */
+        [data-testid="stTable"] th:first-child,
+        [data-testid="stTable"] td:first-child {
+            text-align: left !important;
+            width: 1% !important;       /* Shrink/expand to fit content exactly */
+            white-space: nowrap !important; /* Prevent wrapping for clean alignment */
+        }
 
 st.title("📈 China Portfolio & ETF Tracker")
 st.caption(
@@ -246,7 +250,8 @@ def render_dashboard(series_options: dict):
 
     if rows:
         table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "1Y"]]
-
+        table_df.index.name = None  # Removes the "Name" header above the portfolio names
+        
         def color_pct(v):
             if pd.isna(v):
                 return ""
