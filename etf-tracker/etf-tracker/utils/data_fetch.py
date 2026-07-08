@@ -264,13 +264,16 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
 def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     cache_df = sheets_db.read_df("price_cache")
     end_fetch = _get_last_trading_day()
+    # FIX: Always fetch 10 years of history so the cache is complete for the Watchlist.
+    # The portfolio math will still use the inception_date to calculate returns.
+    default_start = (datetime.now(BEIJING_TZ) - timedelta(days=3650)).strftime("%Y-%m-%d")
+    
     missing_requests = []
     results = {}
     
     for h in holdings:
         ticker = _clean_ticker(h["ticker"])
         asset_type = h.get("asset_type", "stock")
-        start_date = pd.Timestamp(h["inception_date"]).strftime("%Y-%m-%d")
         
         if not cache_df.empty:
             mask = (cache_df["ticker"] == ticker) & (cache_df["asset_type"] == asset_type)
@@ -289,7 +292,7 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
             if start_fetch <= end_fetch:
                 missing_requests.append((ticker, asset_type, start_fetch, end_fetch))
         else:
-            missing_requests.append((ticker, asset_type, start_date, end_fetch))
+            missing_requests.append((ticker, asset_type, default_start, end_fetch))
             
     if not missing_requests:
         return results
