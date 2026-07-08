@@ -118,6 +118,7 @@ def positions_editor(tab_name: str, label: str):
                     live_start_date=live_start_date,
                 )
                 combined = returns.chain_link_backtest(backtest_index_values, live_index)
+                
                 if combined.empty:
                     st.warning("Could not compute combined index.")
                 else:
@@ -125,18 +126,21 @@ def positions_editor(tab_name: str, label: str):
                     rebalance_df.columns = ["date", "index_value"]
                     rebalance_df["portfolio"] = label
                     rebalance_df["date"] = pd.to_datetime(rebalance_df["date"]).dt.strftime("%Y-%m-%d")
-                    rebalance_df["index_value"] = rebalance_df["index_value"].apply(
-                        lambda x: f"{x:.8f}" if pd.notnull(x) else ""
-                    )
+                    
+                    # FIX: Keep index_value as a pure float (JSON number) so Google Sheets 
+                    # doesn't misinterpret dots as thousands separators based on locale.
+                    rebalance_df["index_value"] = pd.to_numeric(rebalance_df["index_value"], errors="coerce")
+                    
                     existing = sheets_db.read_df("backtest_history")
                     if not existing.empty:
                         existing = existing[existing["portfolio"] != label]
+                        
                     combined_df = pd.concat([existing, rebalance_df[["date", "portfolio", "index_value"]]], ignore_index=True)
                     sheets_db.write_df("backtest_history", combined_df)
                     sheets_db.clear_caches()
                     st.success(f"✅ Rebalance complete! {label} backtest now includes performance up to today.")
                     st.rerun()
-
+                    
 def load_backtest(portfolio_label: str) -> pd.Series:
     df = sheets_db.read_df("backtest_history")
     if df.empty:
