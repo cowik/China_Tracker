@@ -16,6 +16,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 import pytz
+import efinance as ef
 
 from utils import sheets_db
 
@@ -63,6 +64,31 @@ def _to_yfinance_ticker(ticker: str) -> str:
     if not ticker:
         return ticker
     return f"{ticker}.SS" if ticker[0] in ("5", "6") else f"{ticker}.SZ"
+
+def _fetch_etf_history_efinance(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """Fetch ETF history using efinance (Eastmoney). 
+    fqt=1 means forward-adjusted (handles splits/dividends correctly)."""
+    try:
+        # efinance takes the raw 6-digit ticker
+        df = ef.stock.get_quote_history(ticker, klt=101, fqt=1)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        
+        # Clean up columns
+        df = df[['日期', '收盘']].copy()
+        df.columns = ['date', 'close']
+        df['date'] = pd.to_datetime(df['date'])
+        df['close'] = pd.to_numeric(df['close'], errors='coerce')
+        df = df.dropna(subset=['close'])
+        
+        # Filter by start and end dates (inclusive)
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+        df = df[(df['date'] >= start_ts) & (df['date'] <= end_ts)]
+        
+        return df.sort_values('date').reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _get_last_trading_day() -> str:
@@ -220,15 +246,18 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
             if session_ok:
                 bs.logout()
                 
-    # Handle ETFs
+    # Handle ETFs (Try efinance first for accurate split adjustments, fallback to yfinance)
     for ticker, asset_type, start_date, end_date in etf_reqs:
-        yf_ticker = _to_yfinance_ticker(ticker)
-        df = _retry_download_yfinance(yf_ticker, start_date, end_date)
+        df = _fetch_etf_history_efinance(ticker, start_date, end_date)
+        
+        # Fallback to yfinance if efinance fails
+        if df.empty:
+            yf_ticker = _to_yfinance_ticker(ticker)
+            df = _retry_download_yfinance(yf_ticker, start_date, end_date)
+            
         if not df.empty:
             results[ticker] = df
             
-    return results
-
 # --------------------------------------------------------------- batch watchlist --
 @st.cache_data(ttl=300, show_spinner=False)
 def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
@@ -280,62 +309,37 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
         missing_labels.append(labels[i])
         missing_yf_tickers.append(yf_tickers[i])
         
-    if missing_yf_tickers:
-        try:
-            # yfinance uses EXCLUSIVE end dates. Add 1 day.
-            end_date_exclusive = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    if missing_tickers:
+        rows_to_write = []
+        for i, t in enumerate(missing_tickers):
+            label = missing_labels[i]
             
-            data = yf.download(
-                missing_yf_tickers, start=start_date, end=end_date_exclusive,
-                progress=False, timeout=30, group_by='ticker',
-                auto_adjust=True,
-            )
-            if data.empty:
-                return results
+            # Try efinance first
+            df = _fetch_etf_history_efinance(t, start_date, end_date)
+            
+            # Fallback to yfinance
+            if df.empty:
+                yf_ticker = _to_yfinance_ticker(t)
+                df = _retry_download_yfinance(yf_ticker, start_date, end_date)
                 
-            rows_to_write = []
-            for i, yf_t in enumerate(missing_yf_tickers):
-                label = missing_labels[i]
-                ticker = missing_tickers[i]
+            if not df.empty:
+                close_series = df.set_index('date')['close']
+                results[label] = close_series / close_series.iloc[0]
                 
-                # Handle both single and multi-index columns safely
-                if isinstance(data.columns, pd.MultiIndex):
-                    if yf_t not in data.columns.get_level_values(0):
-                        continue
-                    sub = data[yf_t]
-                else:
-                    sub = data
+                if close_series.index.tz is not None:
+                    close_series.index = close_series.index.tz_localize(None)
                     
-                if 'Adj Close' in sub.columns:
-                    close = sub['Adj Close']
-                elif 'Close' in sub.columns:
-                    close = sub['Close']
-                else:
-                    continue
-                    
-                close = close.dropna()
-                if not close.empty:
-                    # --- ADD THIS LINE: Filter out intraday data to sync with 17:30 BaoStock rule ---
-                    close = close[close.index.normalize() <= pd.Timestamp(end_date)]
-                    
-                    if not close.empty:
-                        results[label] = close / close.iloc[0]
-                        if close.index.tz is not None:
-                            close.index = close.index.tz_localize(None)
-                        for dt, price in close.items():
-                            rows_to_write.append((ticker, 'etf', dt.strftime("%Y-%m-%d"), float(price)))
+                for dt, price in close_series.items():
+                    # Filter out intraday data to sync with 17:30 rule
+                    if dt.normalize() <= pd.Timestamp(end_date):
+                        rows_to_write.append((t, 'etf', dt.strftime("%Y-%m-%d"), float(price)))
                         
-            if rows_to_write:
-                conn.executemany(
-                    "INSERT OR REPLACE INTO price_cache (ticker, asset_type, date, close) VALUES (?, ?, ?, ?)",
-                    rows_to_write
-                )
-                conn.commit()
-                
-        except Exception as e:
-            st.warning(f"Batch yfinance fetch failed: {e}")
-            
-    return results
+        if rows_to_write:
+            conn.executemany(
+                "INSERT OR REPLACE INTO price_cache (ticker, asset_type, date, close) VALUES (?, ?, ?, ?)",
+                rows_to_write
+            )
+            conn.commit()
 
 # ------------------------------------------------------------------ public --
 @st.cache_data(ttl=900, show_spinner=False)
