@@ -1,6 +1,13 @@
+"""
+Data fetching with Google Sheets price cache.
+- Stocks: BaoStock (adjustflag='2') -> yfinance fallback.
+- ETFs: yfinance only.
+- Caches prices directly in the Google Sheet 'price_cache' tab.
+"""
 from __future__ import annotations
 import time
 import random
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List
 
@@ -13,6 +20,7 @@ from utils import sheets_db
 
 BEIJING_TZ = pytz.timezone("Asia/Shanghai")
 
+# ---------------------------------------------------------------- helpers --
 def _now_beijing() -> datetime:
     return datetime.now(BEIJING_TZ)
 
@@ -72,6 +80,7 @@ def _get_last_trading_day() -> str:
         dt -= timedelta(days=1)
     return dt.strftime("%Y-%m-%d")
 
+# ------------------------------------------------------------ raw fetchers --
 def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) -> pd.DataFrame:
     try:
         end_date_exclusive = (pd.Timestamp(end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
@@ -106,7 +115,6 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
                 return pd.DataFrame()
     return pd.DataFrame()
 
-@st.cache_data(ttl=60, show_spinner=False)
 def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict[str, pd.DataFrame]:
     import baostock as bs
     results = {}
@@ -176,116 +184,12 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
             
     return results
 
-# ---- Google Sheets price cache functions ----
-def _read_price_cache(tickers: list[str] = None) -> pd.DataFrame:
-    """Load price cache from Google Sheets. If tickers given, filter."""
-    df = sheets_db.read_df("price_cache")
-    if df.empty:
-        return pd.DataFrame(columns=["ticker", "asset_type", "date", "close"])
-    if tickers:
-        df = df[df["ticker"].isin(tickers)]
-    return df
-
-def _write_price_cache(new_rows: pd.DataFrame) -> None:
-    """Merge new_rows into price_cache sheet and clear caches."""
-    if new_rows.empty:
-        return
-    # Ensure columns
-    required = ["ticker", "asset_type", "date", "close"]
-    for col in required:
-        if col not in new_rows.columns:
-            new_rows[col] = None
-    # Convert date to string
-    new_rows["date"] = pd.to_datetime(new_rows["date"]).dt.strftime("%Y-%m-%d")
-    # Read existing
-    existing = sheets_db.read_df("price_cache")
-    if not existing.empty:
-        # Remove rows for tickers in new_rows (update)
-        tickers_to_update = new_rows["ticker"].unique()
-        existing = existing[~existing["ticker"].isin(tickers_to_update)]
-    combined = pd.concat([existing, new_rows[required]], ignore_index=True)
-    sheets_db.write_df("price_cache", combined)
-    sheets_db.clear_caches()
-
-def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
-    """
-    Fetch price data for a list of holdings. Uses Google Sheets cache.
-    Returns dict: ticker -> pd.Series of close prices (indexed by date).
-    """
-    tickers = [_clean_ticker(h["ticker"]) for h in holdings]
-    if not tickers:
-        return {}
-
-    end_fetch = _get_last_trading_day()
-    # Read entire cache for these tickers
-    cache_df = _read_price_cache(tickers)
-    results = {}
-    missing_requests = []
-
-    for h in holdings:
-        ticker = _clean_ticker(h["ticker"])
-        asset_type = h.get("asset_type", "stock")
-        inception = pd.Timestamp(h["inception_date"]).strftime("%Y-%m-%d")
-
-        # Filter cache for this ticker + asset_type
-        sub = cache_df[(cache_df["ticker"] == ticker) & (cache_df["asset_type"] == asset_type)]
-        if not sub.empty:
-            sub = sub.copy()
-            sub["date"] = pd.to_datetime(sub["date"])
-            sub = sub.sort_values("date").set_index("date")["close"]
-            results[ticker] = sub
-            max_cached = sub.index.max()
-            if max_cached < pd.Timestamp(end_fetch):
-                start_missing = (max_cached + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-                if start_missing <= end_fetch:
-                    missing_requests.append((ticker, asset_type, start_missing, end_fetch))
-        else:
-            # No cache for this ticker
-            missing_requests.append((ticker, asset_type, inception, end_fetch))
-
-    if missing_requests:
-        fetched = _fetch_missing_data_batch(missing_requests)
-        # Prepare rows to update cache
-        rows_to_write = []
-        for ticker, asset_type, _, _ in missing_requests:
-            if ticker in fetched and not fetched[ticker].empty:
-                df = fetched[ticker].copy()
-                df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
-                df["close"] = pd.to_numeric(df["close"], errors="coerce")
-                df = df.dropna(subset=["close"])
-                for _, row in df.iterrows():
-                    rows_to_write.append({
-                        "ticker": ticker,
-                        "asset_type": asset_type,
-                        "date": row["date"],
-                        "close": float(row["close"])
-                    })
-        if rows_to_write:
-            _write_price_cache(pd.DataFrame(rows_to_write))
-            # Re-read cache to get updated data
-            cache_df = _read_price_cache(tickers)
-
-        # Update results with newly fetched data
-        for h in holdings:
-            ticker = _clean_ticker(h["ticker"])
-            asset_type = h.get("asset_type", "stock")
-            sub = cache_df[(cache_df["ticker"] == ticker) & (cache_df["asset_type"] == asset_type)]
-            if not sub.empty:
-                sub = sub.copy()
-                sub["date"] = pd.to_datetime(sub["date"])
-                sub = sub.sort_values("date").set_index("date")["close"]
-                results[ticker] = sub
-
-    return results
-
+# --------------------------------------------------------------- batch watchlist --
+@st.cache_data(ttl=300, show_spinner=False)
 def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
-    """
-    For watchlist ETFs, return dict with label (name + ticker) -> normalized
-    price series (starting at 1.0). Uses Google Sheets cache.
-    """
     if watchlist_df.empty:
         return {}
-
+        
     tickers = []
     labels = []
     for _, row in watchlist_df.iterrows():
@@ -295,68 +199,135 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
         name = str(row.get("name", "")).strip() or ticker
         tickers.append(ticker)
         labels.append(f"{name} ({ticker})")
-
+        
     if not tickers:
         return {}
-
-    end_fetch = _get_last_trading_day()
-    cache_df = _read_price_cache(tickers)  # all tickers, but we only need etf
+        
+    end_date = _get_last_trading_day()
+    start_date = (datetime.now(BEIJING_TZ) - timedelta(days=3650)).strftime("%Y-%m-%d")
+    
+    # Read from Google Sheets Cache
+    cache_df = sheets_db.read_df("price_cache")
     results = {}
     missing_requests = []
-
-    for i, ticker in enumerate(tickers):
-        label = labels[i]
-        sub = cache_df[(cache_df["ticker"] == ticker) & (cache_df["asset_type"] == "etf")]
-        if not sub.empty:
-            sub = sub.copy()
-            sub["date"] = pd.to_datetime(sub["date"])
-            sub = sub.sort_values("date").set_index("date")["close"]
-            # Normalize to 1.0 at first date
-            if not sub.empty:
-                results[label] = sub / sub.iloc[0]
-            max_cached = sub.index.max() if not sub.empty else pd.NaT
-            if pd.isna(max_cached) or max_cached < pd.Timestamp(end_fetch):
-                start_missing = (max_cached + pd.Timedelta(days=1)).strftime("%Y-%m-%d") if not pd.isna(max_cached) else "1990-01-01"
-                if start_missing <= end_fetch:
-                    missing_requests.append((ticker, "etf", start_missing, end_fetch))
+    missing_labels = []
+    
+    for i, t in enumerate(tickers):
+        if not cache_df.empty:
+            mask = (cache_df["ticker"] == t) & (cache_df["asset_type"] == 'etf')
+            cached = cache_df[mask].copy()
         else:
-            missing_requests.append((ticker, "etf", "1990-01-01", end_fetch))
-
+            cached = pd.DataFrame()
+            
+        if not cached.empty:
+            cached["date"] = pd.to_datetime(cached["date"])
+            cached["close"] = pd.to_numeric(cached["close"], errors="coerce")
+            s = cached.sort_values("date").set_index("date")["close"]
+            if not s.empty:
+                max_date = s.index.max()
+                if max_date >= pd.Timestamp(end_date) - pd.Timedelta(days=4):
+                    results[labels[i]] = s / s.iloc[0]
+                    continue
+                    
+        missing_requests.append((t, 'etf', start_date, end_date))
+        missing_labels.append(labels[i])
+        
     if missing_requests:
-        fetched = _fetch_missing_data_batch(missing_requests)
-        rows_to_write = []
-        for ticker, asset_type, _, _ in missing_requests:
-            if ticker in fetched and not fetched[ticker].empty:
-                df = fetched[ticker].copy()
+        fetched_data = _fetch_missing_data_batch(missing_requests)
+        rows_to_append = []
+        
+        for i, req in enumerate(missing_requests):
+            ticker = req[0]
+            label = missing_labels[i]
+            
+            if ticker in fetched_data and not fetched_data[ticker].empty:
+                df = fetched_data[ticker].copy()
                 df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
                 df["close"] = pd.to_numeric(df["close"], errors="coerce")
                 df = df.dropna(subset=["close"])
-                for _, row in df.iterrows():
-                    rows_to_write.append({
-                        "ticker": ticker,
-                        "asset_type": "etf",
-                        "date": row["date"],
-                        "close": float(row["close"])
-                    })
-        if rows_to_write:
-            _write_price_cache(pd.DataFrame(rows_to_write))
-            # Re-read and update results
-            cache_df = _read_price_cache(tickers)
-
-        # Update results for all watchlist items
-        for i, ticker in enumerate(tickers):
-            label = labels[i]
-            sub = cache_df[(cache_df["ticker"] == ticker) & (cache_df["asset_type"] == "etf")]
-            if not sub.empty:
-                sub = sub.copy()
-                sub["date"] = pd.to_datetime(sub["date"])
-                sub = sub.sort_values("date").set_index("date")["close"]
-                if not sub.empty:
-                    results[label] = sub / sub.iloc[0]
-
+                df = df[df["date"] <= end_date]
+                
+                if not df.empty:
+                    close_series = df.set_index("date")["close"]
+                    results[label] = close_series / close_series.iloc[0]
+                    for dt, price in zip(df["date"], df["close"]):
+                        rows_to_append.append({"ticker": ticker, "asset_type": "etf", "date": dt, "close": price})
+                        
+        if rows_to_append:
+            sheets_db.append_rows("price_cache", rows_to_append)
+            sheets_db.clear_caches()
+            
     return results
 
-# Legacy functions for compatibility
+# ------------------------------------------------------------------ public --
+@st.cache_data(ttl=300, show_spinner=False)
+def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
+    cache_df = sheets_db.read_df("price_cache")
+    end_fetch = _get_last_trading_day()
+    missing_requests = []
+    results = {}
+    
+    for h in holdings:
+        ticker = _clean_ticker(h["ticker"])
+        asset_type = h.get("asset_type", "stock")
+        start_date = pd.Timestamp(h["inception_date"]).strftime("%Y-%m-%d")
+        
+        if not cache_df.empty:
+            mask = (cache_df["ticker"] == ticker) & (cache_df["asset_type"] == asset_type)
+            cached = cache_df[mask].copy()
+        else:
+            cached = pd.DataFrame()
+            
+        if not cached.empty:
+            cached["date"] = pd.to_datetime(cached["date"])
+            cached["close"] = pd.to_numeric(cached["close"], errors="coerce")
+            cached_series = cached.sort_values("date").set_index("date")["close"]
+            results[ticker] = cached_series
+            
+            max_cached_date = cached_series.index.max()
+            start_fetch = (max_cached_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            if start_fetch <= end_fetch:
+                missing_requests.append((ticker, asset_type, start_fetch, end_fetch))
+        else:
+            missing_requests.append((ticker, asset_type, start_date, end_fetch))
+            
+    if not missing_requests:
+        return results
+        
+    fetched_data = _fetch_missing_data_batch(missing_requests)
+    rows_to_append = []
+    
+    for ticker, asset_type, _, _ in missing_requests:
+        if ticker in fetched_data and not fetched_data[ticker].empty:
+            df = fetched_data[ticker].copy()
+            df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+            df["close"] = pd.to_numeric(df["close"], errors="coerce")
+            df = df.dropna(subset=["close"])
+            df = df[df["date"] <= end_fetch]
+            
+            for dt, price in zip(df["date"], df["close"]):
+                rows_to_append.append({"ticker": ticker, "asset_type": asset_type, "date": dt, "close": price})
+                
+    if rows_to_append:
+        sheets_db.append_rows("price_cache", rows_to_append)
+        sheets_db.clear_caches()
+        
+    # Re-read from Google Sheets to get the perfectly combined history
+    cache_df = sheets_db.read_df("price_cache")
+    for h in holdings:
+        ticker = _clean_ticker(h["ticker"])
+        asset_type = h.get("asset_type", "stock")
+        if not cache_df.empty:
+            mask = (cache_df["ticker"] == ticker) & (cache_df["asset_type"] == asset_type)
+            cached = cache_df[mask].copy()
+            if not cached.empty:
+                cached["date"] = pd.to_datetime(cached["date"])
+                cached["close"] = pd.to_numeric(cached["close"], errors="coerce")
+                results[ticker] = cached.sort_values("date").set_index("date")["close"]
+                
+    return results
+
+# ---- backward compatibility ----
 def get_stock_hist(ticker: str, start_date: str = "1990-01-01", end_date: str = "2050-01-01") -> pd.DataFrame:
     s = get_prices_batch([{"ticker": ticker, "asset_type": "stock", "inception_date": start_date}]).get(ticker)
     if s is None or s.empty:
