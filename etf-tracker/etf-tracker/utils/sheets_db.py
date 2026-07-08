@@ -62,11 +62,12 @@ def read_df(tab_name: str) -> pd.DataFrame:
             df[col] = df[col].str.replace(r'[^\d]', '', regex=True)
             df[col] = df[col].apply(lambda x: x.zfill(6) if x.isdigit() else x)
             
-    # FIX: Force index_value to be a clean float by replacing any commas with dots
-    if "index_value" in df.columns:
-        df["index_value"] = df["index_value"].astype(str).str.replace(",", ".", regex=False)
-        df["index_value"] = df["index_value"].str.replace(r"[^\d.\-]", "", regex=True)
-        df["index_value"] = pd.to_numeric(df["index_value"], errors="coerce")
+    # FIX: Clean numeric columns that might be saved as text with commas/dots
+    for col in ["index_value", "weight"]:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.replace(",", ".", regex=False)
+            df[col] = df[col].str.replace(r"[^\d.\-]", "", regex=True)
+            df[col] = pd.to_numeric(df[col], errors="coerce")
         
     return df
 
@@ -78,7 +79,14 @@ def write_df(tab_name: str, df: pd.DataFrame) -> None:
     if not df.empty:
         df = df.copy()
         for col in df.columns:
-            if pd.api.types.is_datetime64_any_dtype(df[col]):
+            if col == "ticker":
+                df[col] = df[col].astype(str).str.strip()
+            elif col in ["index_value", "weight"]:
+                # Convert to float first to standardize, then to string with a dot.
+                # We save it as a string so Google Sheets doesn't apply locale rules.
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+                df[col] = df[col].apply(lambda x: f"{x:.8f}" if pd.notnull(x) else "")
+            elif pd.api.types.is_datetime64_any_dtype(df[col]):
                 df[col] = df[col].dt.strftime('%Y-%m-%d')
             elif df[col].dtype == 'object':
                 first_valid = df[col].first_valid_index()
@@ -88,16 +96,15 @@ def write_df(tab_name: str, df: pd.DataFrame) -> None:
                         df[col] = df[col].apply(
                             lambda x: x.strftime('%Y-%m-%d') if hasattr(x, 'strftime') else str(x)
                         )
-        for col in TICKER_COLUMNS:
-            if col in df.columns:
-                df[col] = df[col].astype(str).str.strip()
+                        
         rows = df.astype(object).where(pd.notnull(df), "").values.tolist()
         try:
-            ws.update([df.columns.values.tolist()] + df.values.tolist())
+            # value_input_option="RAW" tells Google Sheets to store exactly what we send.
+            ws.update([df.columns.values.tolist()] + df.values.tolist(), raw=True)
         except Exception as e:
             st.error(f"Failed to save data to Google Sheets: {e}")
             raise
-
+            
 def append_rows(tab_name: str, rows: list[dict]) -> None:
     if not rows:
         return
