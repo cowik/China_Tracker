@@ -20,6 +20,7 @@ SHEET_SCHEMAS = {
     "backtest_history": ["date", "portfolio", "index_value"],
     "portfolio_settings": ["portfolio", "rebalance_frequency"],
     "display_order": ["label", "sort_order"],
+    "price_cache": ["ticker", "asset_type", "date", "close"],   # <-- ADD THIS
 }
 
 TICKER_COLUMNS = {"ticker"}
