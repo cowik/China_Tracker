@@ -95,9 +95,16 @@ def positions_editor(tab_name: str, label: str):
             holdings = []
             for _, row in df.iterrows():
                 try:
+                    ticker = str(row["ticker"]).strip()
+                    
+                    # Auto-detect ETFs based on ticker prefix if Type is missing
+                    asset_type = str(row.get("asset_type", "")).strip().lower()
+                    if not asset_type or asset_type not in ["stock", "etf"]:
+                        asset_type = "etf" if ticker.startswith(("1", "5")) else "stock"
+                        
                     holdings.append({
-                        "ticker": str(row["ticker"]).strip(),
-                        "asset_type": str(row.get("asset_type", "stock")).strip().lower() or "stock",
+                        "ticker": ticker,
+                        "asset_type": asset_type,
                         "weight": float(row["weight"]) / 100.0,
                         "inception_date": pd.to_datetime(row["purchase_date"]),
                     })
