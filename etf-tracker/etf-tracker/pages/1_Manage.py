@@ -9,26 +9,11 @@ auth.require_password()
 
 st.title("🔧 Manage")
 
-# ----- Rename portfolios for display -----
-PORTFOLIO_LABELS = {
-    "portfolio1_positions": "Возможности Китая",
-    "portfolio2_positions": "Возможности Китая. Специальная 2",
-}
+# Fetch portfolios dynamically
+PORTFOLIOS = sheets_db.get_portfolios()
 
-section = st.sidebar.radio(
-    "Section",
-    [
-        PORTFOLIO_LABELS["portfolio1_positions"],
-        PORTFOLIO_LABELS["portfolio2_positions"],
-        "Watchlist ETFs",
-        "Backtest history upload",
-    ],
-)
-
-SECTION_TAB_MAP = {
-    PORTFOLIO_LABELS["portfolio1_positions"]: "portfolio1_positions",
-    PORTFOLIO_LABELS["portfolio2_positions"]: "portfolio2_positions",
-}
+sections = list(PORTFOLIOS.values()) + ["Watchlist ETFs", "Backtest history upload", "Manage Portfolios"]
+section = st.sidebar.radio("Section", sections)
 
 POSITION_COLS = {
     "ticker": st.column_config.TextColumn("Ticker", help="6-digit A-share code, e.g. 600519"),
@@ -46,7 +31,6 @@ REBALANCE_OPTIONS = {
     "annual": "Annually",
 }
 
-
 def positions_editor(tab_name: str, label: str):
     st.subheader(f"{label} positions")
 
@@ -63,7 +47,6 @@ def positions_editor(tab_name: str, label: str):
         st.success(f"Rebalancing set to: {REBALANCE_OPTIONS[chosen_freq]}")
         st.rerun()
 
-    # Read and prepare data
     df = sheets_db.read_df(tab_name)
     for col in POSITION_COLS:
         if col not in df.columns:
@@ -105,9 +88,8 @@ def positions_editor(tab_name: str, label: str):
         st.divider()
         st.subheader("⚖️ Rebalance (save live performance to backtest)")
         st.caption(
-            "Clicking this will save the current live tracking performance (from the "
-            "last backtest date to today) into the backtest history. This freezes the "
-            "current performance and resets the live tracking start date to today."
+            "Clicking this will save the current live tracking performance into the backtest history. "
+            "This freezes the current performance and resets the live tracking start date to today."
         )
         if st.button(f"Rebalance {label}", key=f"rebalance_{tab_name}"):
             holdings = []
@@ -125,9 +107,7 @@ def positions_editor(tab_name: str, label: str):
             if not holdings:
                 st.warning("No valid positions to rebalance.")
             else:
-                # FIX: Use batch fetching to avoid multiple API logins
                 price_data = data_fetch.get_prices_batch(holdings)
-                
                 backtest_index_values = load_backtest(label)
                 rebalance_freq = sheets_db.get_rebalance_frequency(label)
                 live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
@@ -157,7 +137,6 @@ def positions_editor(tab_name: str, label: str):
                     st.success(f"✅ Rebalance complete! {label} backtest now includes performance up to today.")
                     st.rerun()
 
-
 def load_backtest(portfolio_label: str) -> pd.Series:
     df = sheets_db.read_df("backtest_history")
     if df.empty:
@@ -169,11 +148,10 @@ def load_backtest(portfolio_label: str) -> pd.Series:
     df = df.sort_values("date")
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
-
-if section in SECTION_TAB_MAP:
-    tab_name = SECTION_TAB_MAP[section]
-    label = section
-    positions_editor(tab_name, label)
+# --- Routing ---
+if section in PORTFOLIOS.values():
+    tab_name = [k for k, v in PORTFOLIOS.items() if v == section][0]
+    positions_editor(tab_name, section)
 
 elif section == "Watchlist ETFs":
     st.subheader("Watchlist ETFs")
@@ -202,7 +180,10 @@ elif section == "Watchlist ETFs":
 
 elif section == "Backtest history upload":
     st.subheader("Upload historical backtest returns")
-    st.caption("Upload an Excel file with columns: Date, Portfolio (exactly 'Возможности Китая' or 'Возможности Китая. Специальная 2'), Index Value (starting at 100).")
+    st.caption("Upload an Excel file with columns: Date, Portfolio, Index Value (starting at 100).")
+
+    allowed_portfolios = list(PORTFOLIOS.values())
+    st.write(f"**Allowed Portfolio names:** {', '.join(allowed_portfolios)}")
 
     os.makedirs("data", exist_ok=True)
     template_path = "data/backtest_template.xlsx"
@@ -210,14 +191,6 @@ elif section == "Backtest history upload":
         pd.DataFrame(columns=["Date", "Portfolio", "Index Value"]).to_excel(
             template_path, index=False, sheet_name="Backtest Data"
         )
-        with pd.ExcelWriter(template_path, mode='a', engine='openpyxl') as writer:
-            pd.DataFrame([
-                ["How to fill in this template"],
-                ["1. One row per date, per portfolio."],
-                ["2. 'Date' = the date of that data point."],
-                ["3. 'Portfolio' must be exactly 'Возможности Китая' or 'Возможности Китая. Специальная 2'."],
-                ["4. 'Index Value' = a performance index starting at 100."]
-            ]).to_excel(writer, sheet_name="Instructions", index=False, header=False)
 
     with open(template_path, "rb") as f:
         st.download_button("Download blank template", f, file_name="backtest_template.xlsx")
@@ -242,10 +215,9 @@ elif section == "Backtest history upload":
             if not required.issubset(new_data.columns):
                 st.error(f"Missing columns. Found: {list(new_data.columns)}")
             else:
-                allowed = {"Возможности Китая", "Возможности Китая. Специальная 2"}
-                bad = set(new_data["Portfolio"]) - allowed
+                bad = set(new_data["Portfolio"]) - set(allowed_portfolios)
                 if bad:
-                    st.error(f"Unrecognized portfolio(s): {bad}. Must be exactly 'Возможности Китая' or 'Возможности Китая. Специальная 2'.")
+                    st.error(f"Unrecognized portfolio(s): {bad}. Must match an existing portfolio name exactly.")
                 else:
                     st.dataframe(new_data, use_container_width=True)
                     if st.button("Confirm and save"):
@@ -271,3 +243,25 @@ elif section == "Backtest history upload":
     st.divider()
     st.write("Current stored backtest history:")
     st.dataframe(sheets_db.read_df("backtest_history"), use_container_width=True)
+
+elif section == "Manage Portfolios":
+    st.subheader("Manage Portfolios")
+    st.caption("Add new portfolios or delete existing ones._deleted portfolios cannot be recovered.")
+    
+    with st.form("add_portfolio_form"):
+        new_label = st.text_input("New Portfolio Name")
+        submitted = st.form_submit_button("Add Portfolio")
+        if submitted and new_label:
+            sheets_db.add_portfolio(new_label)
+            st.success(f"Added portfolio: {new_label}")
+            st.rerun()
+            
+    st.divider()
+    st.write("**Existing Portfolios:**")
+    for tab, label in PORTFOLIOS.items():
+        col1, col2 = st.columns([4, 1])
+        col1.write(f"{label} (`{tab}`)")
+        if col2.button("Delete", key=f"del_{tab}"):
+            sheets_db.delete_portfolio(tab, label)
+            st.warning(f"Deleted {label}")
+            st.rerun()
