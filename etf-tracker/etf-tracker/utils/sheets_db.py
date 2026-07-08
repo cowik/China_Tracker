@@ -61,6 +61,13 @@ def read_df(tab_name: str) -> pd.DataFrame:
             df[col] = df[col].astype(str).str.strip()
             df[col] = df[col].str.replace(r'[^\d]', '', regex=True)
             df[col] = df[col].apply(lambda x: x.zfill(6) if x.isdigit() else x)
+            
+    # FIX: Force index_value to be a clean float by replacing any commas with dots
+    if "index_value" in df.columns:
+        df["index_value"] = df["index_value"].astype(str).str.replace(",", ".", regex=False)
+        df["index_value"] = df["index_value"].str.replace(r"[^\d.\-]", "", regex=True)
+        df["index_value"] = pd.to_numeric(df["index_value"], errors="coerce")
+        
     return df
 
 def write_df(tab_name: str, df: pd.DataFrame) -> None:
