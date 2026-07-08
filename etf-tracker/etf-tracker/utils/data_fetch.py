@@ -279,7 +279,12 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
         if asset_type == "etf":
             start_date = (datetime.now(BEIJING_TZ) - timedelta(days=3650)).strftime("%Y-%m-%d")
         else:
-            start_date = pd.Timestamp(h["inception_date"]).strftime("%Y-%m-%d")
+            # FIX: Safely handle missing/NaT purchase dates to prevent ValueError crash
+            inc_date = h.get("inception_date")
+            if pd.isna(inc_date):
+                start_date = (datetime.now(BEIJING_TZ) - timedelta(days=3650)).strftime("%Y-%m-%d")
+            else:
+                start_date = pd.Timestamp(inc_date).strftime("%Y-%m-%d")
         
         if not cache_df.empty:
             mask = (cache_df["ticker"] == ticker) & (cache_df["asset_type"] == asset_type)
