@@ -391,12 +391,16 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     rows_to_write = []
     for ticker, asset_type, _, _ in missing_requests:
         if ticker in fetched_data and not fetched_data[ticker].empty:
-            df = fetched_data[ticker]
+            df = fetched_data[ticker].copy()
+            # Coerce to numeric, any non‑numeric becomes NaN
+            df["close"] = pd.to_numeric(df["close"], errors="coerce")
+            # Drop rows where close is NaN (invalid data)
+            df = df.dropna(subset=["close"])
             for _, row in df.iterrows():
                 rows_to_write.append((
-                    ticker, asset_type, 
-                    pd.to_datetime(row["date"]).strftime("%Y-%m-%d"), 
-                    float(row["close"])
+                    ticker, asset_type,
+                    pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                    float(row["close"])   # now guaranteed to be a float
                 ))
                 
     if rows_to_write:
