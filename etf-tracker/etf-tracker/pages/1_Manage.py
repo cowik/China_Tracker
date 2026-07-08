@@ -140,7 +140,7 @@ def positions_editor(tab_name: str, label: str):
                     sheets_db.clear_caches()
                     st.success(f"✅ Rebalance complete! {label} backtest now includes performance up to today.")
                     st.rerun()
-                    
+
 def load_backtest(portfolio_label: str) -> pd.Series:
     df = sheets_db.read_df("backtest_history")
     if df.empty:
@@ -236,9 +236,11 @@ elif section == "Backtest history upload":
                         new_data["date"] = pd.to_datetime(new_data["date"]).dt.strftime("%Y-%m-%d")
                         new_data["index_value"] = pd.to_numeric(new_data["index_value"], errors="coerce")
                         combined_df = pd.concat([existing, new_data[["date", "portfolio", "index_value"]]], ignore_index=True)
-                        combined_df["index_value"] = combined_df["index_value"].apply(
-                            lambda x: f"{x:.8f}" if pd.notnull(x) else ""
-                        )
+                        
+                        # FIX: Keep index_value as a pure float (JSON number) so Google Sheets 
+                        # doesn't misinterpret dots as thousands separators based on locale.
+                        combined_df["index_value"] = pd.to_numeric(combined_df["index_value"], errors="coerce")
+                        
                         sheets_db.write_df("backtest_history", combined_df)
                         sheets_db.clear_caches()
                         st.success("Backtest history saved.")
