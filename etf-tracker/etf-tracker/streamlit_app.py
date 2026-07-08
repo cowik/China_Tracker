@@ -37,24 +37,32 @@ st.markdown(
         }
         
         /* --- MOBILE TABLE FIXES --- */
-        /* Force table to fit exactly within container width, NO scrollbar */
         [data-testid="stDataFrame"] {
             max-width: 100% !important;
             overflow: hidden !important; 
         }
-        /* Force long Russian portfolio names to wrap to the next line */
         [data-testid="stDataFrame"] th, 
         [data-testid="stDataFrame"] td {
             word-break: break-word !important;
             white-space: normal !important;
-            min-width: 40px !important; /* Keeps columns narrow enough to fit */
+            min-width: 40px !important;
         }
-        /* Reduce side padding on mobile screens to maximize width */
         @media (max-width: 768px) {
             .block-container {
                 padding-left: 1rem !important;
                 padding-right: 1rem !important;
             }
+        }
+        
+        /* --- STATIC TABLE FIXES --- */
+        [data-testid="stTable"] {
+            width: 100% !important;
+        }
+        [data-testid="stTable"] th, 
+        [data-testid="stTable"] td {
+            word-break: break-word !important;
+            white-space: normal !important;
+            text-align: center !important;
         }
     </style>
     """,
@@ -67,9 +75,7 @@ st.caption(
     "reinvested), not just price change."
 )
 
-# Fetch portfolios dynamically from Google Sheets
 PORTFOLIO_LABELS = sheets_db.get_portfolios()
-
 
 def load_holdings(tab_name: str) -> list[dict]:
     df = sheets_db.read_df(tab_name)
@@ -86,7 +92,6 @@ def load_holdings(tab_name: str) -> list[dict]:
             continue
     return holdings
 
-
 def load_backtest(portfolio_label: str) -> pd.Series:
     df = sheets_db.read_df("backtest_history")
     if df.empty:
@@ -98,11 +103,9 @@ def load_backtest(portfolio_label: str) -> pd.Series:
     df = df.sort_values("date")
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
-
 @st.cache_data(ttl=300, show_spinner=False)
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
     price_data = data_fetch.get_prices_batch(holdings)
-
     backtest_index_values = load_backtest(portfolio_label)
     rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
     live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
@@ -124,26 +127,27 @@ def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[
 
     return returns.chain_link_backtest(backtest_index_values, live_index)
 
-
 def load_watchlist() -> pd.DataFrame:
     return sheets_db.read_df("watchlist_etfs")
-
 
 with st.spinner("Loading your data..."):
     backtest_df = sheets_db.read_df("backtest_history")
     series_options = {}
 
-    # Dynamically load all portfolios
     for tab_name, label in PORTFOLIO_LABELS.items():
         holdings = load_holdings(tab_name)
         if holdings or not backtest_df[backtest_df["portfolio"] == label].empty:
             series_options[label] = compute_portfolio_index(tab_name, label, holdings)
 
-    # Load watchlist
     watchlist_df = load_watchlist()
     if not watchlist_df.empty:
         watchlist_prices = data_fetch.get_watchlist_prices(watchlist_df)
         series_options.update(watchlist_prices)
+
+    # Sort series_options based on saved display order
+    order_map = sheets_db.get_display_order()
+    sorted_keys = sorted(series_options.keys(), key=lambda x: order_map.get(x, 9999))
+    series_options = {k: series_options[k] for k in sorted_keys}
 
 if not series_options:
     st.info(
@@ -152,21 +156,18 @@ if not series_options:
     )
     st.stop()
 
-
 @st.fragment(run_every=timedelta(minutes=5))
 def render_dashboard(series_options: dict):
     st.subheader("Performance chart")
     
-    # Use columns to put the dropdown and the time period selector side-by-side
     col1, col2 = st.columns([3, 2])
     with col1:
         choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
     with col2:
-        # Native Streamlit selector for time periods.
         period = st.radio(
             "Period",
             options=["5D", "1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "Max"],
-            index=8,  # Default to "Max"
+            index=8,
             horizontal=True,
             key="period_selector"
         )
@@ -177,8 +178,6 @@ def render_dashboard(series_options: dict):
         st.warning("No price data available yet for this selection.")
     else:
         chart_series = chart_series.dropna()
-        
-        # Determine the start date based on the selected period
         last_date = chart_series.index.max()
         
         if period == "5D":
@@ -197,16 +196,14 @@ def render_dashboard(series_options: dict):
             start_date = last_date - pd.DateOffset(years=3)
         elif period == "5Y":
             start_date = last_date - pd.DateOffset(years=5)
-        else:  # Max
+        else:
             start_date = chart_series.index.min()
 
-        # Filter the series to the selected period
         view_series = chart_series[chart_series.index >= start_date]
 
         if len(view_series) < 2:
             st.warning(f"Not enough data to display for the selected {period} period.")
         else:
-            # Rebase the series to 0% at the start of the selected window
             rebased_series = (view_series / view_series.iloc[0] - 1) * 100
 
             fig = go.Figure()
@@ -221,15 +218,13 @@ def render_dashboard(series_options: dict):
                 yaxis_title="Total return (%)",
                 margin=dict(l=10, r=10, t=30, b=10),
                 height=450,
-                dragmode=False, # Disables dragging/panning on the chart
-                hovermode="x",  # Shows hover info for the closest x point
+                dragmode=False,
+                hovermode="x",
             )
             
-            # Add horizontal and vertical spike lines on hover
             fig.update_xaxes(showspikes=True, spikethickness=1, spikecolor="gray", spikemode="across")
             fig.update_yaxes(showspikes=True, spikethickness=1, spikecolor="gray", spikemode="across")
             
-            # Configuration to lock the chart down for mobile
             plotly_config = {
                 'displayModeBar': False,
                 'displaylogo': False,
@@ -244,7 +239,6 @@ def render_dashboard(series_options: dict):
     for label, s in series_options.items():
         if s.dropna().empty:
             continue
-        # Use the last available trading day in the data, not calendar today
         last_trading_day = s.dropna().index.max() 
         row = returns.comparison_row(s, last_trading_day)
         row["Name"] = label
@@ -259,9 +253,8 @@ def render_dashboard(series_options: dict):
             return f"color: {'#0a7a2f' if v >= 0 else '#c02020'}"
 
         styled = table_df.style.format("{:+.2f}%", na_rep="—").map(color_pct)
-        st.dataframe(styled, use_container_width=True)
+        st.table(styled)
     else:
         st.info("Not enough data yet to build the comparison table.")
-
 
 render_dashboard(series_options)
