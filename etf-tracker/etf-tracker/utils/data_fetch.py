@@ -224,7 +224,6 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
             cached_series = cached.sort_values("date").set_index("date")["close"]
             results[labels[i]] = cached_series / cached_series.iloc[0]
             
-            # Check if we need to fetch newer data
             max_cached_date = cached_series.index.max()
             start_fetch = (max_cached_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
             if start_fetch <= end_date:
@@ -250,7 +249,6 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
                 df = df[df["date"].dt.normalize() <= pd.Timestamp(end_date)]
                 
                 if not df.empty:
-                    # Combine old cache with new fetch for the final series
                     old_series = results.get(label, pd.Series(dtype=float))
                     new_series = df.set_index("date")["close"]
                     combined_series = pd.concat([old_series, new_series]).sort_index()
@@ -270,16 +268,18 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
 def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     cache_df = sheets_db.read_df("price_cache")
     end_fetch = _get_last_trading_day()
-    # FIX: Always fetch 10 years of history so the cache is complete for the Watchlist.
-    # The portfolio math will still use the inception_date to calculate returns.
-    default_start = (datetime.now(BEIJING_TZ) - timedelta(days=3650)).strftime("%Y-%m-%d")
-    
     missing_requests = []
     results = {}
     
     for h in holdings:
         ticker = _clean_ticker(h["ticker"])
         asset_type = h.get("asset_type", "stock")
+        
+        # OPTIMIZATION: Full 10-year history for ETFs, but only from inception_date for Stocks
+        if asset_type == "etf":
+            start_date = (datetime.now(BEIJING_TZ) - timedelta(days=3650)).strftime("%Y-%m-%d")
+        else:
+            start_date = pd.Timestamp(h["inception_date"]).strftime("%Y-%m-%d")
         
         if not cache_df.empty:
             mask = (cache_df["ticker"] == ticker) & (cache_df["asset_type"] == asset_type)
@@ -298,7 +298,7 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
             if start_fetch <= end_fetch:
                 missing_requests.append((ticker, asset_type, start_fetch, end_fetch))
         else:
-            missing_requests.append((ticker, asset_type, default_start, end_fetch))
+            missing_requests.append((ticker, asset_type, start_date, end_fetch))
             
     if not missing_requests:
         return results
