@@ -21,12 +21,20 @@ from utils import sheets_db
 BEIJING_TZ = pytz.timezone("Asia/Shanghai")
 
 # ----------------------------------------------------------------- SQLite Cache --
-@st.cache_resource(show_spinner=False)
 def _get_db_conn():
+    """Returns a fresh SQLite connection. Ensures table exists and WAL mode is enabled."""
     os.makedirs("data", exist_ok=True)
     conn = sqlite3.connect("data/prices.db", check_same_thread=False)
-    # Enable WAL mode to prevent "database is locked" errors
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS price_cache (
+            ticker TEXT,
+            asset_type TEXT,
+            date TEXT,
+            close REAL,
+            PRIMARY KEY (ticker, asset_type, date)
+        )
+    """)
     conn.commit()
     return conn
 
@@ -289,6 +297,7 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
             )
             conn.commit()
             
+    conn.close()
     return results
 
 # ------------------------------------------------------------------ public --
@@ -338,6 +347,7 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
             missing_requests.append((ticker, asset_type, start_date, end_fetch))
             
     if not missing_requests:
+        conn.close()
         return results
         
     fetched_data = _fetch_missing_data_batch(missing_requests)
@@ -365,6 +375,7 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
         conn, params=tickers
     )
     
+    conn.close()
     for h in holdings:
         ticker = _clean_ticker(h["ticker"])
         asset_type = h.get("asset_type", "stock")
