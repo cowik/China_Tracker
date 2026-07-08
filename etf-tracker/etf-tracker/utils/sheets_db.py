@@ -22,6 +22,7 @@ SHEET_SCHEMAS = {
     "transactions": ["date", "portfolio", "ticker", "type", "amount_note"],
     "backtest_history": ["date", "portfolio", "index_value"],
     "portfolio_settings": ["portfolio", "rebalance_frequency"],
+    "display_order": ["label", "sort_order"],
 }
 
 TICKER_COLUMNS = {"ticker"}
@@ -126,7 +127,6 @@ def get_portfolios() -> dict[str, str]:
     """Returns {tab_name: label}. Migrates hardcoded ones if table is empty."""
     df = read_df("portfolios_meta")
     if df.empty:
-        # Initialize with existing hardcoded portfolios
         df = pd.DataFrame([
             {"tab_name": "portfolio1_positions", "label": "Возможности Китая"},
             {"tab_name": "portfolio2_positions", "label": "Возможности Китая. Специальная 2"}
@@ -144,7 +144,7 @@ def add_portfolio(label: str) -> str:
     new_row = pd.DataFrame([{"tab_name": tab_name, "label": label}])
     df = pd.concat([df, new_row], ignore_index=True)
     write_df("portfolios_meta", df)
-    _get_or_create_worksheet(tab_name) # Create the empty sheet
+    _get_or_create_worksheet(tab_name)
     clear_caches()
     return tab_name
 
@@ -153,7 +153,6 @@ def delete_portfolio(tab_name: str, label: str) -> None:
     df = df[df["tab_name"] != tab_name]
     write_df("portfolios_meta", df)
     
-    # Delete the worksheet
     try:
         ss = _get_spreadsheet()
         ws = ss.worksheet(tab_name)
@@ -161,7 +160,6 @@ def delete_portfolio(tab_name: str, label: str) -> None:
     except Exception:
         pass
         
-    # Clean up backtest history & settings
     bt = read_df("backtest_history")
     if not bt.empty:
         bt = bt[bt["portfolio"] != label]
@@ -172,4 +170,18 @@ def delete_portfolio(tab_name: str, label: str) -> None:
         settings = settings[settings["portfolio"] != label]
         write_df("portfolio_settings", settings)
         
+    clear_caches()
+
+# --------------------------------------------------------------- display order --
+def get_display_order() -> dict[str, int]:
+    """Returns {label: sort_order}. Items not in dict will default to 9999."""
+    df = read_df("display_order")
+    if df.empty:
+        return {}
+    df["sort_order"] = pd.to_numeric(df["sort_order"], errors="coerce").fillna(9999).astype(int)
+    return dict(zip(df["label"], df["sort_order"]))
+
+def save_display_order(labels: list[str]) -> None:
+    df = pd.DataFrame({"label": labels, "sort_order": range(1, len(labels) + 1)})
+    write_df("display_order", df)
     clear_caches()
