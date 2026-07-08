@@ -242,16 +242,19 @@ def get_watchlist_prices(watchlist_df: pd.DataFrame) -> Dict[str, pd.Series]:
             
             if ticker in fetched_data and not fetched_data[ticker].empty:
                 df = fetched_data[ticker].copy()
-                df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+                # FIX: Keep date as datetime for the series index to prevent TypeError in returns.py
+                df["date"] = pd.to_datetime(df["date"])
                 df["close"] = pd.to_numeric(df["close"], errors="coerce")
                 df = df.dropna(subset=["close"])
-                df = df[df["date"] <= end_date]
+                df = df[df["date"].dt.normalize() <= pd.Timestamp(end_date)]
                 
                 if not df.empty:
                     close_series = df.set_index("date")["close"]
                     results[label] = close_series / close_series.iloc[0]
+                    
+                    # Format to string ONLY for appending to Google Sheets
                     for dt, price in zip(df["date"], df["close"]):
-                        rows_to_append.append({"ticker": ticker, "asset_type": "etf", "date": dt, "close": price})
+                        rows_to_append.append({"ticker": ticker, "asset_type": "etf", "date": dt.strftime("%Y-%m-%d"), "close": price})
                         
         if rows_to_append:
             sheets_db.append_rows("price_cache", rows_to_append)
@@ -300,13 +303,13 @@ def get_prices_batch(holdings: list[dict]) -> dict[str, pd.Series]:
     for ticker, asset_type, _, _ in missing_requests:
         if ticker in fetched_data and not fetched_data[ticker].empty:
             df = fetched_data[ticker].copy()
-            df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+            df["date"] = pd.to_datetime(df["date"])
             df["close"] = pd.to_numeric(df["close"], errors="coerce")
             df = df.dropna(subset=["close"])
-            df = df[df["date"] <= end_fetch]
+            df = df[df["date"].dt.normalize() <= pd.Timestamp(end_fetch)]
             
             for dt, price in zip(df["date"], df["close"]):
-                rows_to_append.append({"ticker": ticker, "asset_type": asset_type, "date": dt, "close": price})
+                rows_to_append.append({"ticker": ticker, "asset_type": asset_type, "date": dt.strftime("%Y-%m-%d"), "close": price})
                 
     if rows_to_append:
         sheets_db.append_rows("price_cache", rows_to_append)
