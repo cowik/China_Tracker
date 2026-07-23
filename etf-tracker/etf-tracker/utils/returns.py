@@ -70,6 +70,7 @@ def build_portfolio_index(
     # --- FIX: ensure index is datetime ---
     if not isinstance(combined.index, pd.DatetimeIndex):
         combined.index = pd.to_datetime(combined.index)
+        combined = combined[~combined.index.duplicated(keep='last')]
 
     for h in holdings:
         ticker = h["ticker"]
