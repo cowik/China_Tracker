@@ -66,37 +66,38 @@ def build_portfolio_index(
     # Align on the union of dates; each holding only contributes from its own
     # inception date onward. Before a holding's inception, we hold it at its
     # starting weighted value (i.e. don't let it drag the index before it existed).
-    # ... inside build_portfolio_index() ...
+    combined = pd.DataFrame(factor_frames)
 
-combined = pd.DataFrame(factor_frames)
+    # --- FIX: robust date parsing and deduplication ---
+    # Convert index to datetime (coerce invalid to NaT)
+    combined.index = pd.to_datetime(combined.index, errors='coerce')
+    combined = combined.sort_index()
 
-# Parse dates robustly – adjust format to match your Google Sheets locale
-combined.index = pd.to_datetime(combined.index, errors='coerce')  # or with format='%m/%d/%Y'
-combined = combined.sort_index()
+    # Remove duplicate index entries (keep the last value per date)
+    combined = combined[~combined.index.duplicated(keep='last')]
+    # Drop rows with invalid date (NaT)
+    combined = combined[combined.index.notna()]
+    # -----------------------------------------------
 
-# Remove duplicates and invalid dates
-combined = combined[~combined.index.duplicated(keep='last')]
-combined = combined[combined.index.notna()]
+    for h in holdings:
+        ticker = h["ticker"]
+        if ticker not in combined.columns:
+            continue
+        col = combined[ticker]
+        first_valid = col.first_valid_index()
+        if first_valid is not None:
+            flat_value = col.loc[first_valid]
+            # SAFETY: force scalar in case loc returned a Series (due to duplicate index)
+            if isinstance(flat_value, pd.Series):
+                flat_value = flat_value.iloc[0]
 
-for h in holdings:
-    ticker = h["ticker"]
-    if ticker not in combined.columns:
-        continue
-    col = combined[ticker]
-    first_valid = col.first_valid_index()
-    if first_valid is not None:
-        flat_value = col.loc[first_valid]
-        # SAFETY: force scalar in case loc returned a Series
-        if isinstance(flat_value, pd.Series):
-            flat_value = flat_value.iloc[0]
-        
-        combined[ticker] = col.fillna(flat_value)
-        combined.loc[combined.index < first_valid, ticker] = flat_value
+            combined[ticker] = col.fillna(flat_value)
+            combined.loc[combined.index < first_valid, ticker] = flat_value
 
-# ... rest of your function ...    
     combined = combined.sort_index().ffill()
     portfolio_index = combined.sum(axis=1)
-    # --- FIX: ensure index is datetime before filtering ---
+
+    # Ensure index is datetime before filtering
     if not isinstance(portfolio_index.index, pd.DatetimeIndex):
         portfolio_index.index = pd.to_datetime(portfolio_index.index)
 
