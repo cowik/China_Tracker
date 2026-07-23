@@ -79,7 +79,7 @@ def build_portfolio_index(
         first_valid = col.first_valid_index()
         if first_valid is not None:
             flat_value = col.loc[first_valid]
-            combined[ticker] = col.where(col.notna(), flat_value)
+            combined[ticker] = col.fillna(flat_value)
             combined.loc[combined.index < first_valid, ticker] = flat_value
 
     combined = combined.sort_index().ffill()
