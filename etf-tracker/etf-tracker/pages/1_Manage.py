@@ -198,6 +198,8 @@ def slice_by_period(chart_series: pd.Series, period: str) -> pd.Series:
         start_date = pd.Timestamp(year=last_date.year, month=1, day=1)
     elif period == "1Y":
         start_date = last_date - pd.DateOffset(years=1)
+    elif period == "2Y":
+        start_date = last_date - pd.DateOffset(years=2)
     elif period == "3Y":
         start_date = last_date - pd.DateOffset(years=3)
     elif period == "5Y":
@@ -392,8 +394,8 @@ elif section == "Export Chart to Excel":
         with col2:
             period = st.selectbox(
                 "Period",
-                options=["5D", "1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "Max"],
-                index=8,
+                options=["5D", "1M", "3M", "6M", "YTD", "1Y", "2Y", "3Y", "5Y", "Max"],
+                index=9,
                 key="export_period",
             )
 
