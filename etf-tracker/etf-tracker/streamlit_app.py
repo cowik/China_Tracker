@@ -183,7 +183,7 @@ def render_dashboard(series_options: dict):
     with col1:
         choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
     with col2:
-        period = st.radio("Period", options=["5D", "1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "Max"], index=8, horizontal=True, key="period_selector")
+        period = st.radio("Period", options=["5D", "1M", "3M", "6M", "YTD", "1Y", "2Y", "3Y", "5Y", "Max"], index=9, horizontal=True, key="period_selector")
 
     chart_series = series_options.get(choice)
     if chart_series is None or chart_series.dropna().empty:
@@ -204,6 +204,8 @@ def render_dashboard(series_options: dict):
             start_date = pd.Timestamp(year=last_date.year, month=1, day=1)
         elif period == "1Y":
             start_date = last_date - pd.DateOffset(years=1)
+        elif period == "2Y":
+            start_date = last_date - pd.DateOffset(years=2)
         elif period == "3Y":
             start_date = last_date - pd.DateOffset(years=3)
         elif period == "5Y":
@@ -235,8 +237,8 @@ def render_dashboard(series_options: dict):
         rows.append(row)
 
     if rows:
-        # Added "YTD" column between 6M and 1Y
-        table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "YTD", "1Y"]]
+        # Added "2Y" column between 1Y and 3Y (which is hidden here but exists in PERIOD_DEFS)
+        table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "YTD", "1Y", "2Y"]]
         table_df.index.name = None
         def color_pct(v):
             if pd.isna(v):
