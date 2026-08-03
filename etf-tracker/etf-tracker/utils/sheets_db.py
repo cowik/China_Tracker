@@ -2,6 +2,7 @@
 Persistence layer: everything is stored in one Google Sheet, in separate tabs.
 """
 from __future__ import annotations
+import time
 import gspread
 import pandas as pd
 import streamlit as st
@@ -28,6 +29,24 @@ SHEET_SCHEMAS = {
 
 TICKER_COLUMNS = {"ticker"}
 
+def _retry_api_call(func, *args, **kwargs):
+    """Calls a gspread function and retries up to 4 times with exponential backoff
+    if Google Sheets returns an API/Rate Limit error."""
+    max_retries = 4
+    base_delay = 2
+    
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            if attempt < max_retries - 1:
+                sleep_time = base_delay * (2 ** attempt)
+                time.sleep(sleep_time)
+            else:
+                raise
+        except Exception:
+            raise
+
 @st.cache_resource(show_spinner=False)
 def _get_client() -> gspread.Client:
     creds_dict = dict(st.secrets["gcp_service_account"])
@@ -37,12 +56,12 @@ def _get_client() -> gspread.Client:
 @st.cache_resource(show_spinner=False)
 def _get_spreadsheet():
     client = _get_client()
-    return client.open_by_key(st.secrets["google_sheet_id"])
+    return _retry_api_call(client.open_by_key, st.secrets["google_sheet_id"])
 
 def _get_or_create_worksheet(tab_name: str):
     ss = _get_spreadsheet()
     try:
-        return ss.worksheet(tab_name)
+        return _retry_api_call(ss.worksheet, tab_name)
     except gspread.WorksheetNotFound:
         headers = SHEET_SCHEMAS.get(tab_name, [])
         ws = ss.add_worksheet(title=tab_name, rows=200, cols=max(len(headers), 1))
@@ -53,7 +72,12 @@ def _get_or_create_worksheet(tab_name: str):
 @st.cache_data(ttl=900, show_spinner=False)
 def read_df(tab_name: str) -> pd.DataFrame:
     ws = _get_or_create_worksheet(tab_name)
-    records = ws.get_all_records()
+    try:
+        records = _retry_api_call(ws.get_all_records)
+    except Exception as e:
+        st.error(f"Failed to read {tab_name} from Google Sheets after multiple retries. Please wait a minute and refresh.")
+        return pd.DataFrame(columns=SHEET_SCHEMAS.get(tab_name, []))
+        
     if not records:
         return pd.DataFrame(columns=SHEET_SCHEMAS.get(tab_name, []))
     df = pd.DataFrame(records)
@@ -72,11 +96,16 @@ def read_df(tab_name: str) -> pd.DataFrame:
 
 def write_df(tab_name: str, df: pd.DataFrame) -> None:
     ws = _get_or_create_worksheet(tab_name)
-    ws.clear()
+    try:
+        _retry_api_call(ws.clear)
+    except Exception as e:
+        st.error(f"Failed to clear {tab_name} on Google Sheets: {e}")
+        raise
+
     if df.empty:
         headers = SHEET_SCHEMAS.get(tab_name, [])
         if headers:
-            ws.append_row(headers)
+            _retry_api_call(ws.append_row, headers)
         return
 
     df = df.copy()
@@ -100,7 +129,7 @@ def write_df(tab_name: str, df: pd.DataFrame) -> None:
     headers = df.columns.values.tolist()
     
     try:
-        ws.update([headers] + rows, raw=True)
+        _retry_api_call(ws.update, [headers] + rows, raw=True)
     except Exception as e:
         st.error(f"Failed to save data to Google Sheets: {e}")
         raise
@@ -125,7 +154,7 @@ def append_rows(tab_name: str, rows: list[dict]) -> None:
         clean_values.append(row_vals)
         
     try:
-        ws.append_rows(clean_values, value_input_option="RAW")
+        _retry_api_call(ws.append_rows, clean_values, value_input_option="RAW")
     except Exception as e:
         st.error(f"Failed to append rows: {e}")
         raise
