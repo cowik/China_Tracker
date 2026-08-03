@@ -264,6 +264,24 @@ def period_return(index_series: pd.Series, as_of, lookback_days: int | None, ytd
     return (end_val / start_val - 1) * 100.0
 
 
+def max_drawdown(index_series: pd.Series) -> float | None:
+    """Calculates the maximum peak-to-trough drawdown over the entire history of the provided series.
+    Returns the value as a negative percentage (e.g., -15.5)."""
+    if index_series.empty:
+        return None
+    s = index_series.sort_index().dropna()
+    if s.empty:
+        return None
+    
+    running_max = s.cummax()
+    drawdown = (s - running_max) / running_max
+    mdd = drawdown.min() * 100.0
+    
+    if pd.isna(mdd):
+        return None
+    return mdd
+
+
 PERIOD_DEFS = {
     "1D": 1,
     "1W": 7,
@@ -277,7 +295,9 @@ PERIOD_DEFS = {
 
 def comparison_row(index_series: pd.Series, as_of) -> dict:
     """Returns a dict of {period_label: pct_return} for the standard comparison-table periods.
-    Includes YTD, computed from Jan 1 of the latest available date's year."""
+    Includes YTD, computed from Jan 1 of the latest available date's year.
+    Includes Max Drawdown, calculated over the full available history."""
     row = {label: period_return(index_series, as_of, days) for label, days in PERIOD_DEFS.items()}
     row["YTD"] = period_return(index_series, as_of, None, ytd=True)
+    row["Max Drawdown"] = max_drawdown(index_series)
     return row
