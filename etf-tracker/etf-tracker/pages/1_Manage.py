@@ -10,7 +10,7 @@ auth.require_password()
 st.title("🔧 Manage")
 
 PORTFOLIOS = sheets_db.get_portfolios()
-sections = list(PORTFOLIOS.values()) + ["Watchlist ETFs", "Backtest history upload", "Manage Portfolios", "Reorder Items"]
+sections = list(PORTFOLIOS.values()) + ["Watchlist ETFs", "Backtest history upload", "Manage Portfolios", "Reorder Items", "Export Chart to Excel"]
 section = st.sidebar.radio("Section", sections)
 
 POSITION_COLS = {
@@ -231,3 +231,51 @@ elif section == "Reorder Items":
             sheets_db.save_display_order(sorted_df["Item"].tolist())
             st.success("Display order saved!")
             st.rerun()
+
+elif section == "Export Chart to Excel":
+    st.subheader("📊 Export chart to Excel")
+    st.caption(
+        "Pick a portfolio or ETF and a period. The Excel file will contain "
+        "the underlying data series on one sheet and a native Excel line chart "
+        "on another sheet."
+    )
+
+    from utils.chart_export import build_series_options, build_excel_bytes
+
+    try:
+        series_options = build_series_options()
+    except Exception as e:
+        st.error(f"Failed to load series: {e}")
+        series_options = {}
+
+    if not series_options:
+        st.info("No portfolios or watchlist ETFs set up yet. Add some first.")
+    else:
+        col1, col2 = st.columns([3, 2])
+        with col1:
+            choice = st.selectbox("Choose what to chart:", list(series_options.keys()), key="export_choice")
+        with col2:
+            period = st.selectbox(
+                "Period",
+                options=["5D", "1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "Max"],
+                index=8,
+                key="export_period",
+            )
+
+        chart_series = series_options.get(choice)
+        if chart_series is None or chart_series.dropna().empty:
+            st.warning("No data available for this selection.")
+        else:
+            try:
+                excel_bytes = build_excel_bytes(choice, chart_series, period)
+                safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in choice)
+                file_name = f"{safe_name}_{period}.xlsx"
+                st.download_button(
+                    label="⬇️ Download Excel file",
+                    data=excel_bytes,
+                    file_name=file_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+                st.success("Excel file is ready — click the button above to download.")
+            except Exception as e:
+                st.error(f"Could not build Excel: {e}")
