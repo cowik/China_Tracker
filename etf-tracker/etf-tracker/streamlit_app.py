@@ -235,7 +235,8 @@ def render_dashboard(series_options: dict):
         rows.append(row)
 
     if rows:
-        table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "1Y"]]
+        # Added "YTD" column between 6M and 1Y
+        table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "YTD", "1Y"]]
         table_df.index.name = None
         def color_pct(v):
             if pd.isna(v):
