@@ -237,8 +237,8 @@ def render_dashboard(series_options: dict):
         rows.append(row)
 
     if rows:
-        # Added "2Y" column between 1Y and 3Y (which is hidden here but exists in PERIOD_DEFS)
-        table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "YTD", "1Y", "2Y"]]
+        # Added "Max Drawdown" column to the far right
+        table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "YTD", "1Y", "2Y", "Max Drawdown"]]
         table_df.index.name = None
         def color_pct(v):
             if pd.isna(v):
