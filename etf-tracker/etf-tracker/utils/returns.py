@@ -275,5 +275,8 @@ PERIOD_DEFS = {
 
 
 def comparison_row(index_series: pd.Series, as_of) -> dict:
-    """Returns a dict of {period_label: pct_return} for the standard comparison-table periods."""
-    return {label: period_return(index_series, as_of, days) for label, days in PERIOD_DEFS.items()}
+    """Returns a dict of {period_label: pct_return} for the standard comparison-table periods.
+    Includes YTD, computed from Jan 1 of the latest available date's year."""
+    row = {label: period_return(index_series, as_of, days) for label, days in PERIOD_DEFS.items()}
+    row["YTD"] = period_return(index_series, as_of, None, ytd=True)
+    return row
