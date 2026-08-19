@@ -64,6 +64,9 @@ def positions_editor(tab_name: str, label: str):
     if st.button("Save changes", key=f"save_{tab_name}"):
         clean = edited.dropna(subset=["ticker"]).copy()
         clean["ticker"] = clean["ticker"].astype(str).str.strip()
+        # FIX: Safely convert dates to strings, replacing NaT with empty string
+        # This prevents the NaTType strftime ValueError in sheets_db.write_df
+        clean["purchase_date"] = pd.to_datetime(clean["purchase_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna('')
         sheets_db.write_df(tab_name, clean)
         sheets_db.clear_caches()
         st.success("Saved.")
@@ -72,7 +75,18 @@ def positions_editor(tab_name: str, label: str):
     if not df.empty:
         st.divider()
         st.subheader("⚖️ Rebalance (save live performance to backtest)")
-        if st.button(f"Rebalance {label}", key=f"rebalance_{tab_name}"):
+        
+        # Pre-rebalance validation
+        total_weight = df["weight"].sum()
+        missing_dates = df["purchase_date"].isna().any()
+        weights_valid = abs(total_weight - 100) <= 0.5
+        
+        if missing_dates:
+            st.error("Please ensure all positions have a Purchase Date before rebalancing.")
+        elif not weights_valid:
+            st.error(f"Weights must sum to 100% to rebalance. Currently sum to {total_weight:.1f}%.")
+
+        if st.button(f"Rebalance {label}", key=f"rebalance_{tab_name}", disabled=(not weights_valid or missing_dates)):
             holdings = []
             for _, row in df.iterrows():
                 try:
@@ -94,7 +108,8 @@ def positions_editor(tab_name: str, label: str):
                     rebalance_df = combined.reset_index()
                     rebalance_df.columns = ["date", "index_value"]
                     rebalance_df["portfolio"] = label
-                    rebalance_df["date"] = pd.to_datetime(rebalance_df["date"]).dt.strftime("%Y-%m-%d")
+                    # FIX: Safely format dates to strings, replacing NaT with empty string
+                    rebalance_df["date"] = pd.to_datetime(rebalance_df["date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna('')
                     rebalance_df["index_value"] = pd.to_numeric(rebalance_df["index_value"], errors="coerce")
                     existing = sheets_db.read_df("backtest_history")
                     if not existing.empty:
@@ -317,7 +332,8 @@ elif section == "Backtest history upload":
                         if not existing.empty:
                             existing = existing[~existing["portfolio"].isin(uploaded_pf)]
                         new_data = new_data.rename(columns={"Date": "date", "Portfolio": "portfolio", "Index Value": "index_value"})
-                        new_data["date"] = pd.to_datetime(new_data["date"]).dt.strftime("%Y-%m-%d")
+                        # FIX: Safely format dates
+                        new_data["date"] = pd.to_datetime(new_data["date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna('')
                         new_data["index_value"] = pd.to_numeric(new_data["index_value"], errors="coerce")
                         combined_df = pd.concat([existing, new_data[["date", "portfolio", "index_value"]]], ignore_index=True)
                         sheets_db.write_df("backtest_history", combined_df)
