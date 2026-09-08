@@ -21,7 +21,14 @@ def build_holding_return_factor(hfq_prices: pd.Series, inception_date) -> pd.Ser
     """
     # Ensure index is datetime
     if not isinstance(hfq_prices.index, pd.DatetimeIndex):
-        hfq_prices.index = pd.to_datetime(hfq_prices.index)
+        hfq_prices.index = pd.to_datetime(hfq_prices.index, errors='coerce')
+    
+    # FIX: Drop invalid dates (NaT) and duplicate dates IMMEDIATELY.
+    # This prevents the "cannot reindex on an axis with duplicate labels" 
+    # error when we build a DataFrame out of these Series later.
+    hfq_prices = hfq_prices[hfq_prices.index.notna()]
+    hfq_prices = hfq_prices[~hfq_prices.index.duplicated(keep='last')]
+    
     hfq_prices = hfq_prices.sort_index()
     hfq_prices = hfq_prices[hfq_prices.index >= pd.Timestamp(inception_date)]
     if hfq_prices.empty:
@@ -68,7 +75,7 @@ def build_portfolio_index(
     # starting weighted value (i.e. don't let it drag the index before it existed).
     combined = pd.DataFrame(factor_frames)
 
-    # --- FIX: robust date parsing and deduplication ---
+    # --- Robust date parsing and deduplication ---
     # Convert index to datetime (coerce invalid to NaT)
     combined.index = pd.to_datetime(combined.index, errors='coerce')
     combined = combined.sort_index()
@@ -191,6 +198,11 @@ def compute_live_index(
         combined = pd.concat([combined, seg_chained])
         if not combined.empty:
             running_value = combined.iloc[-1]
+            
+    # FIX: Final safety deduplication
+    if not combined.empty:
+        combined = combined[~combined.index.duplicated(keep='last')]
+        
     return combined
 
 
@@ -200,6 +212,8 @@ def normalize_to_factor(index_values: pd.Series) -> pd.Series:
     s = index_values.sort_index().dropna()
     if s.empty:
         return s
+    # FIX: Drop duplicates to prevent reindex errors downstream
+    s = s[~s.index.duplicated(keep='last')]
     return s / s.iloc[0]
 
 
@@ -225,6 +239,10 @@ def chain_link_backtest(backtest_index_values: pd.Series, live_index: pd.Series)
     live_chained = junction_value * live_index
     live_chained = live_chained[live_chained.index > backtest_factor.index[-1]]
     combined = pd.concat([backtest_factor, live_chained]).sort_index()
+    
+    # FIX: Ensure no duplicates exist in the final combined output
+    combined = combined[~combined.index.duplicated(keep='last')]
+    
     return combined
 
 
