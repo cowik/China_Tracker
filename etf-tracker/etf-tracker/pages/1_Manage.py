@@ -32,6 +32,19 @@ REBALANCE_OPTIONS = {
     "annual": "Annually",
 }
 
+def _deduplicate_index_data(data):
+    """Helper to remove duplicate dates from DataFrames, Series, or dicts of them."""
+    if isinstance(data, pd.DataFrame):
+        return data[~data.index.duplicated(keep='last')]
+    elif isinstance(data, pd.Series):
+        return data[~data.index.duplicated(keep='last')]
+    elif isinstance(data, dict):
+        for k, v in data.items():
+            if isinstance(v, (pd.DataFrame, pd.Series)):
+                data[k] = v[~v.index.duplicated(keep='last')]
+        return data
+    return data
+
 def positions_editor(tab_name: str, label: str):
     st.subheader(f"{label} positions")
     current_freq = sheets_db.get_rebalance_frequency(label)
@@ -65,7 +78,6 @@ def positions_editor(tab_name: str, label: str):
         clean = edited.dropna(subset=["ticker"]).copy()
         clean["ticker"] = clean["ticker"].astype(str).str.strip()
         # FIX: Safely convert dates to strings, replacing NaT with empty string
-        # This prevents the NaTType strftime ValueError in sheets_db.write_df
         clean["purchase_date"] = pd.to_datetime(clean["purchase_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna('')
         sheets_db.write_df(tab_name, clean)
         sheets_db.clear_caches()
@@ -76,7 +88,6 @@ def positions_editor(tab_name: str, label: str):
         st.divider()
         st.subheader("⚖️ Rebalance (save live performance to backtest)")
         
-        # Pre-rebalance validation
         total_weight = df["weight"].sum()
         missing_dates = df["purchase_date"].isna().any()
         weights_valid = abs(total_weight - 100) <= 0.5
@@ -97,18 +108,25 @@ def positions_editor(tab_name: str, label: str):
                 st.warning("No valid positions to rebalance.")
             else:
                 price_data = data_fetch.get_prices_batch(holdings)
+                # FIX: Sanitize price data to remove duplicate dates
+                price_data = _deduplicate_index_data(price_data)
+                
                 backtest_index_values = load_backtest(label)
                 rebalance_freq = sheets_db.get_rebalance_frequency(label)
                 live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
                 live_index = returns.compute_live_index(holdings, price_data, rebalance_frequency=rebalance_freq, live_start_date=live_start_date)
                 combined = returns.chain_link_backtest(backtest_index_values, live_index)
+                
+                # FIX: Drop duplicates in combined before proceeding
+                if not combined.empty:
+                    combined = combined[~combined.index.duplicated(keep='last')]
+                    
                 if combined.empty:
                     st.warning("Could not compute combined index.")
                 else:
                     rebalance_df = combined.reset_index()
                     rebalance_df.columns = ["date", "index_value"]
                     rebalance_df["portfolio"] = label
-                    # FIX: Safely format dates to strings, replacing NaT with empty string
                     rebalance_df["date"] = pd.to_datetime(rebalance_df["date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna('')
                     rebalance_df["index_value"] = pd.to_numeric(rebalance_df["index_value"], errors="coerce")
                     existing = sheets_db.read_df("backtest_history")
@@ -129,6 +147,8 @@ def load_backtest(portfolio_label: str) -> pd.Series:
         return pd.Series(dtype=float)
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date")
+    # FIX: Drop duplicate dates to prevent reindex errors
+    df = df.drop_duplicates(subset=["date"], keep="last")
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 # ----------------------------------------------------------- Excel Export Helpers --
@@ -154,6 +174,9 @@ def _compute_portfolio_index_cached(tab_name: str, portfolio_label: str, holding
         for t, at, w, d in holdings_key
     ]
     price_data = data_fetch.get_prices_batch(holdings)
+    # FIX: Sanitize price data
+    price_data = _deduplicate_index_data(price_data)
+    
     backtest_index_values = load_backtest(portfolio_label)
     rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
     live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
@@ -171,7 +194,12 @@ def _compute_portfolio_index_cached(tab_name: str, portfolio_label: str, holding
         )
         if not live_index.empty and live_start_date is not None:
             live_index = live_index[live_index.index >= live_start_date]
-    return returns.chain_link_backtest(backtest_index_values, live_index)
+            
+    combined = returns.chain_link_backtest(backtest_index_values, live_index)
+    # FIX: Drop duplicates in final combined output
+    if not combined.empty:
+        combined = combined[~combined.index.duplicated(keep='last')]
+    return combined
 
 def compute_portfolio_index_export(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
     holdings_key = tuple(
@@ -332,7 +360,6 @@ elif section == "Backtest history upload":
                         if not existing.empty:
                             existing = existing[~existing["portfolio"].isin(uploaded_pf)]
                         new_data = new_data.rename(columns={"Date": "date", "Portfolio": "portfolio", "Index Value": "index_value"})
-                        # FIX: Safely format dates
                         new_data["date"] = pd.to_datetime(new_data["date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna('')
                         new_data["index_value"] = pd.to_numeric(new_data["index_value"], errors="coerce")
                         combined_df = pd.concat([existing, new_data[["date", "portfolio", "index_value"]]], ignore_index=True)
