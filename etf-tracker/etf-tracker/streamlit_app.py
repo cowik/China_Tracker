@@ -87,6 +87,19 @@ st.caption(
 
 PORTFOLIO_LABELS = sheets_db.get_portfolios()
 
+def _deduplicate_index_data(data):
+    """Helper to remove duplicate dates from DataFrames, Series, or dicts of them."""
+    if isinstance(data, pd.DataFrame):
+        return data[~data.index.duplicated(keep='last')]
+    elif isinstance(data, pd.Series):
+        return data[~data.index.duplicated(keep='last')]
+    elif isinstance(data, dict):
+        for k, v in data.items():
+            if isinstance(v, (pd.DataFrame, pd.Series)):
+                data[k] = v[~v.index.duplicated(keep='last')]
+        return data
+    return data
+
 def load_holdings(tab_name: str) -> list[dict]:
     df = sheets_db.read_df(tab_name)
     holdings = []
@@ -111,11 +124,17 @@ def load_backtest(portfolio_label: str) -> pd.Series:
         return pd.Series(dtype=float)
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date")
+    # FIX: Drop duplicate dates to prevent reindex errors
+    df = df.drop_duplicates(subset=["date"], keep="last")
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
     price_data = data_fetch.get_prices_batch(holdings)
+    
+    # FIX: Sanitize price data to remove any duplicate dates
+    price_data = _deduplicate_index_data(price_data)
+
     backtest_index_values = load_backtest(portfolio_label)
     rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
     live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
@@ -135,7 +154,13 @@ def compute_portfolio_index(tab_name: str, portfolio_label: str, holdings: list[
         if not live_index.empty and live_start_date is not None:
             live_index = live_index[live_index.index >= live_start_date]
 
-    return returns.chain_link_backtest(backtest_index_values, live_index)
+    combined_index = returns.chain_link_backtest(backtest_index_values, live_index)
+    
+    # FIX: Ensure the final combined index has no duplicates
+    if not combined_index.empty:
+        combined_index = combined_index[~combined_index.index.duplicated(keep='last')]
+        
+    return combined_index
 
 def load_watchlist() -> pd.DataFrame:
     return sheets_db.read_df("watchlist_etfs")
