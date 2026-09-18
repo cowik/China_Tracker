@@ -419,6 +419,7 @@ elif section == "AI Market Analyst":
         clean_settings = settings_df[settings_df["setting_name"] != "prompt"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
         clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "prompt", "value": new_prompt, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d")}])], ignore_index=True)
         sheets_db.write_df("llm_settings", clean_settings)
+        sheets_db.clear_caches()  # FIX: Clear cache so app sees new prompt
         st.success("Prompt saved!")
         st.rerun()
 
@@ -437,7 +438,7 @@ elif section == "AI Market Analyst":
             if st.button("Generate Fresh Analysis"):
                 with st.spinner("Searching the web for live news and generating analysis..."):
                     try:
-                        # 1. Fetch live news from Google News RSS (No API Key, No rate limits)
+                        # 1. Fetch live news from Google News RSS
                         import xml.etree.ElementTree as ET
                         news_context = ""
                         try:
@@ -458,27 +459,34 @@ elif section == "AI Market Analyst":
                         # 2. Construct full prompt with live news injected
                         full_prompt = f"{new_prompt}\n\n--- LIVE NEWS CONTEXT ---\n{news_context}\n--- END NEWS CONTEXT ---\nPlease write your analysis now."
                         
-                        # 3. Call Pollinations AI via POST (OpenAI compatible format)
+                        # 3. Call Pollinations AI via POST
                         url = "https://text.pollinations.ai/openai"
                         payload = {
-                            "model": "openai",  # Pollinations routes to their best available model
+                            "model": "openai",
                             "messages": [{"role": "user", "content": full_prompt}]
                         }
                         response = requests.post(url, json=payload, timeout=60)
                         
                         if response.status_code == 200:
-                            data = response.json()
-                            if 'choices' in data and len(data['choices']) > 0:
-                                llm_output = data['choices'][0]['message']['content']
+                            llm_output = ""
+                            try:
+                                data = response.json()
+                                if 'choices' in data and len(data['choices']) > 0:
+                                    llm_output = data['choices'][0]['message']['content']
+                            except:
+                                # FIX: Fallback if API returns plain text instead of JSON
+                                llm_output = response.text
                                 
+                            if llm_output and len(llm_output) > 20:
                                 # Save output to Google Sheets to cache for the day
                                 clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
                                 clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
                                 sheets_db.write_df("llm_settings", clean_settings)
+                                sheets_db.clear_caches()  # FIX: Clear cache so app sees new output
                                 st.success("Generated fresh analysis!")
                                 st.rerun()
                             else:
-                                st.error("LLM returned an unexpected response format.")
+                                st.error("LLM returned an empty response.")
                         else:
                             st.error(f"LLM Generation failed. Status: {response.status_code}")
                     except Exception as e:
