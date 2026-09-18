@@ -5,9 +5,11 @@ import io
 import openpyxl
 from openpyxl.chart import LineChart, Reference
 import datetime
+import requests
+from urllib.parse import quote
+from duckduckgo_search import DDGS
 
 from utils import sheets_db, data_fetch, returns, auth
-import google.generativeai as genai
 
 st.set_page_config(page_title="Manage - Portfolio Tracker", layout="wide")
 auth.require_password()
