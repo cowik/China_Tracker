@@ -7,7 +7,6 @@ from openpyxl.chart import LineChart, Reference
 import datetime
 import requests
 from urllib.parse import quote
-from duckduckgo_search import DDGS
 
 from utils import sheets_db, data_fetch, returns, auth
 
