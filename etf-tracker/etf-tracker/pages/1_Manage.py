@@ -391,8 +391,8 @@ elif section == "Export Chart to Excel":
                 st.error(f"Could not build Excel: {e}")
 
 elif section == "AI Market Analyst":
-    st.subheader("🤖 AI Market Analyst (Gemini 2.0 Flash)")
-    st.caption("Input a fixed prompt. The LLM will generate a new answer when the app is opened and cache it for the day.")
+    st.subheader("🤖 AI Market Analyst (Llama 3 + Live Search)")
+    st.caption("Input a fixed prompt. The LLM will search the web for live news and generate a new answer daily.")
     
     # Load saved prompt
     settings_df = sheets_db.read_df("llm_settings")
@@ -430,28 +430,41 @@ elif section == "AI Market Analyst":
         if last_updated.date() == datetime.date.today():
             needs_generation = False
 
-    api_key = st.secrets.get("gemini_api_key")
-    if not api_key:
-        st.error("Please add `gemini_api_key = \"YOUR_KEY\"` to your Streamlit Secrets to enable the AI.")
-    elif not new_prompt:
+    if not new_prompt:
         st.warning("Please save a prompt first.")
     else:
         if needs_generation:
-            with st.spinner("Generating market analysis via Gemini 2.0 Flash..."):
-                try:
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel('gemini-2.0-flash')
-                    response = model.generate_content(new_prompt)
-                    llm_output = response.text
-                    
-                    # Save output to Google Sheets to cache for the day
-                    clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
-                    clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
-                    sheets_db.write_df("llm_settings", clean_settings)
-                    st.success("Generated fresh analysis!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"LLM Generation failed: {e}")
+            if st.button("Generate Fresh Analysis"):
+                with st.spinner("Searching the web for live news and generating analysis..."):
+                    try:
+                        # 1. Fetch live news from DuckDuckGo (No API Key needed)
+                        news_context = ""
+                        with DDGS() as ddgs:
+                            results = list(ddgs.news("China stock market economy news today", max_results=5))
+                            for r in results:
+                                news_context += f"Title: {r.get('title', '')}\nBody: {r.get('body', '')}\n\n"
+                        
+                        # 2. Construct full prompt with live news injected
+                        full_prompt = f"{new_prompt}\n\n--- LIVE NEWS CONTEXT ---\n{news_context}\n--- END NEWS CONTEXT ---\nPlease write your analysis now."
+                        
+                        # 3. Call Pollinations AI (Llama 3, No API Key needed)
+                        encoded_prompt = quote(full_prompt)
+                        url = f"https://text.pollinations.ai/{encoded_prompt}?model=llama"
+                        response = requests.get(url, timeout=60)
+                        
+                        if response.status_code == 200 and len(response.text) > 50:
+                            llm_output = response.text
+                            
+                            # Save output to Google Sheets to cache for the day
+                            clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
+                            clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
+                            sheets_db.write_df("llm_settings", clean_settings)
+                            st.success("Generated fresh analysis!")
+                            st.rerun()
+                        else:
+                            st.error(f"LLM Generation failed. Status: {response.status_code}")
+                    except Exception as e:
+                        st.error(f"An error occurred: {e}")
         else:
             st.markdown("**Today's AI Analysis:**")
             st.container(border=True).markdown(saved_output)
