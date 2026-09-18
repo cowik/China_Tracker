@@ -437,12 +437,23 @@ elif section == "AI Market Analyst":
             if st.button("Generate Fresh Analysis"):
                 with st.spinner("Searching the web for live news and generating analysis..."):
                     try:
-                        # 1. Fetch live news from DuckDuckGo (No API Key needed)
+                        # 1. Fetch live news from Google News RSS (No API Key, No rate limits)
+                        import xml.etree.ElementTree as ET
                         news_context = ""
-                        with DDGS() as ddgs:
-                            results = list(ddgs.news("China stock market economy news today", max_results=5))
-                            for r in results:
-                                news_context += f"Title: {r.get('title', '')}\nBody: {r.get('body', '')}\n\n"
+                        try:
+                            rss_url = "https://news.google.com/rss/search?q=China+stock+market&hl=en-US&gl=US&ceid=US:en"
+                            r_news = requests.get(rss_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                            root = ET.fromstring(r_news.content)
+                            items = root.findall('.//item')[:5]
+                            for item in items:
+                                title = item.find('title').text if item.find('title') is not None else ""
+                                desc = item.find('description').text if item.find('description') is not None else ""
+                                news_context += f"Title: {title}\nBody: {desc}\n\n"
+                        except Exception:
+                            news_context = "Could not fetch live news."
+
+                        if not news_context:
+                            news_context = "No live news found today."
                         
                         # 2. Construct full prompt with live news injected
                         full_prompt = f"{new_prompt}\n\n--- LIVE NEWS CONTEXT ---\n{news_context}\n--- END NEWS CONTEXT ---\nPlease write your analysis now."
