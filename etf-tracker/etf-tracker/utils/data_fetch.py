@@ -1,4 +1,4 @@
-""
+"""
 Data fetching with Google Sheets price cache.
 - Stocks: BaoStock (adjustflag='2') -> yfinance fallback.
 - ETFs: yfinance only.
