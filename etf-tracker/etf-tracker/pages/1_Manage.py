@@ -447,20 +447,27 @@ elif section == "AI Market Analyst":
                         # 2. Construct full prompt with live news injected
                         full_prompt = f"{new_prompt}\n\n--- LIVE NEWS CONTEXT ---\n{news_context}\n--- END NEWS CONTEXT ---\nPlease write your analysis now."
                         
-                        # 3. Call Pollinations AI (Llama 3, No API Key needed)
-                        encoded_prompt = quote(full_prompt)
-                        url = f"https://text.pollinations.ai/{encoded_prompt}?model=llama"
-                        response = requests.get(url, timeout=60)
+                        # 3. Call Pollinations AI via POST (OpenAI compatible format)
+                        url = "https://text.pollinations.ai/openai"
+                        payload = {
+                            "model": "openai",  # Pollinations routes to their best available model
+                            "messages": [{"role": "user", "content": full_prompt}]
+                        }
+                        response = requests.post(url, json=payload, timeout=60)
                         
-                        if response.status_code == 200 and len(response.text) > 50:
-                            llm_output = response.text
-                            
-                            # Save output to Google Sheets to cache for the day
-                            clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
-                            clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
-                            sheets_db.write_df("llm_settings", clean_settings)
-                            st.success("Generated fresh analysis!")
-                            st.rerun()
+                        if response.status_code == 200:
+                            data = response.json()
+                            if 'choices' in data and len(data['choices']) > 0:
+                                llm_output = data['choices'][0]['message']['content']
+                                
+                                # Save output to Google Sheets to cache for the day
+                                clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
+                                clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
+                                sheets_db.write_df("llm_settings", clean_settings)
+                                st.success("Generated fresh analysis!")
+                                st.rerun()
+                            else:
+                                st.error("LLM returned an unexpected response format.")
                         else:
                             st.error(f"LLM Generation failed. Status: {response.status_code}")
                     except Exception as e:
