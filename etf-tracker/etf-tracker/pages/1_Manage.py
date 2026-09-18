@@ -431,91 +431,109 @@ elif section == "AI Market Analyst":
         if last_updated.date() == datetime.date.today():
             needs_generation = False
 
-    if needs_generation:
-        if st.button("Generate Fresh Analysis"):
-            with st.spinner("Поиск новостей и генерация анализа..."):
-                try:
-                    import xml.etree.ElementTree as ET
-                    import json
-                    from urllib.parse import quote
-                    
-                    # 1. Fetch live news
-                    news_context = ""
+        if needs_generation:
+            if st.button("Generate Fresh Analysis"):
+                with st.spinner("Поиск новостей и генерация анализа..."):
                     try:
-                        rss_url = "https://news.google.com/rss/search?q=China+stock+market&hl=en-US&gl=US&ceid=US:en"
-                        r_news = requests.get(rss_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-                        root = ET.fromstring(r_news.content)
-                        items = root.findall('.//item')[:5]
-                        for item in items:
-                            title = item.find('title').text if item.find('title') is not None else ""
-                            news_context += f"Title: {title}\n"
-                    except:
-                        news_context = "Could not fetch live news."
-
-                    full_prompt = f"{new_prompt}\n\n--- LIVE NEWS HEADLINES ---\n{news_context}\n--- END NEWS ---\nPlease write your analysis now."
-                    llm_output = ""
-                    
-                    # 2. Try DuckDuckGo AI (с обновленными заголовками)
-                    try:
-                        headers = {
-                            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                            "x-vqd-accept": "1",
-                            "Accept": "*/*",
-                            "Referer": "https://duckduckgo.com/"
-                        }
-                        status_resp = requests.get("https://duckduckgo.com/duckchat/v1/status", headers=headers, timeout=10)
-                        token = status_resp.headers.get("x-vqd-4")
+                        import xml.etree.ElementTree as ET
+                        import json
+                        from urllib.parse import quote
                         
-                        if token and status_resp.status_code == 200:
-                            chat_url = "https://duckduckgo.com/duckchat/v1/chat"
-                            payload = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": full_prompt}]}
-                            chat_resp = requests.post(chat_url, headers={**headers, "x-vqd-4": token}, json=payload, timeout=60)
-                            
-                            if chat_resp.status_code == 200:
-                                for line in chat_resp.text.split("\n"):
-                                    if line.startswith("data: "):
-                                        try:
-                                            data = json.loads(line[6:])
-                                            if "message" in data: llm_output += data["message"]
-                                        except: pass
-                    except:
-                        pass # Если DDG упал (405/403), идем к резерву
-                    
-                    # 3. Fallback на Pollinations (Новый API)
-                    if not llm_output or len(llm_output) < 50:
+                        # 1. Fetch live news (Берем 7 новостей для большего контекста)
+                        news_context = ""
                         try:
-                            url = "https://api.pollinations.ai/v1/chat/completions"
-                            payload = {"model": "openai", "messages": [{"role": "user", "content": full_prompt}]}
-                            resp = requests.post(url, json=payload, timeout=60)
-                            if resp.status_code == 200:
-                                llm_output = resp.json()["choices"][0]["message"]["content"]
+                            rss_url = "https://news.google.com/rss/search?q=China+stock+market+OR+A股&hl=en-US&gl=US&ceid=US:en"
+                            r_news = requests.get(rss_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                            root = ET.fromstring(r_news.content)
+                            items = root.findall('.//item')[:7]
+                            for item in items:
+                                title = item.find('title').text if item.find('title') is not None else ""
+                                news_context += f"- {title}\n"
                         except:
-                            pass # Если и этот упал, идем к последнему резерву
+                            news_context = "Could not fetch live news."
 
-                    # 4. Последний резерв: Pollinations GET
-                    if not llm_output or len(llm_output) < 50:
+                        # 2. Жесткий промпт с текущей датой
+                        today_str = datetime.datetime.now().strftime("%d %B %Y")
+                        full_prompt = f"""Ты профессиональный финансовый аналитик по китайскому фондовому рынку (A-shares и Гонконг). 
+Сегодня {today_str}. 
+Твоя задача — написать краткий, емкий и профессиональный обзор рынка за сегодняшний день.
+
+СТРОГИЕ ПРАВИЛА:
+1. Пиши ТОЛЬКО на русском языке. Названия компаний и индексов пиши на английском.
+2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ китайские иероглифы.
+3. Формат: только сплошной текст (3-4 абзаца). ЗАПРЕЩЕНО использовать таблицы, списки или буллиты.
+4. Базируй свой анализ СТРОГО на заголовках новостей, предоставленных ниже. 
+5. НЕ ВЫДУМЫВАЙ события, даты из будущего (например, 2026 год) или несуществующие источники.
+
+--- СВЕЖИЕ НОВОСТИ ЗА СЕГОДНЯ ---
+{news_context}
+--- КОНЕЦ НОВОСТЕЙ ---
+
+Напиши свой профессиональный анализ прямо сейчас, соблюдая все правила."""
+                        
+                        llm_output = ""
+                        
+                        # 3. Try DuckDuckGo AI
                         try:
-                            encoded_prompt = quote(full_prompt[:1800])
-                            url = f"https://text.pollinations.ai/{encoded_prompt}?model=openai"
-                            resp = requests.get(url, timeout=60)
-                            if resp.status_code == 200 and len(resp.text) > 50:
-                                llm_output = resp.text
+                            headers = {
+                                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                "x-vqd-accept": "1",
+                                "Accept": "*/*",
+                                "Referer": "https://duckduckgo.com/"
+                            }
+                            status_resp = requests.get("https://duckduckgo.com/duckchat/v1/status", headers=headers, timeout=10)
+                            token = status_resp.headers.get("x-vqd-4")
+                            
+                            if token and status_resp.status_code == 200:
+                                chat_url = "https://duckduckgo.com/duckchat/v1/chat"
+                                payload = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": full_prompt}]}
+                                chat_resp = requests.post(chat_url, headers={**headers, "x-vqd-4": token}, json=payload, timeout=60)
+                                
+                                if chat_resp.status_code == 200:
+                                    for line in chat_resp.text.split("\n"):
+                                        if line.startswith("data: "):
+                                            try:
+                                                data = json.loads(line[6:])
+                                                if "message" in data: llm_output += data["message"]
+                                            except: pass
                         except:
                             pass
-                            
-                    # 5. Сохраняем в Google Sheets
-                    if llm_output and len(llm_output) > 50:
-                        clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
-                        clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
-                        sheets_db.write_df("llm_settings", clean_settings)
-                        sheets_db.clear_caches()
-                        st.success("Анализ сгенерирован и сохранен!")
-                        st.rerun()
-                    else:
-                        st.error("Все бесплатные провайдеры сейчас недоступны. Попробуйте обновить позже.")
                         
-                except Exception as e:
-                    st.error(f"An error occurred: {e}")
-    else:
-        st.markdown("**Сегодняшний анализ рынка:**")
-        st.container(border=True).markdown(saved_output)
+                        # 4. Fallback на Pollinations (Новый API)
+                        if not llm_output or len(llm_output) < 50:
+                            try:
+                                url = "https://api.pollinations.ai/v1/chat/completions"
+                                payload = {"model": "openai", "messages": [{"role": "user", "content": full_prompt}]}
+                                resp = requests.post(url, json=payload, timeout=60)
+                                if resp.status_code == 200:
+                                    llm_output = resp.json()["choices"][0]["message"]["content"]
+                            except:
+                                pass
+
+                        # 5. Последний резерв: Pollinations GET
+                        if not llm_output or len(llm_output) < 50:
+                            try:
+                                encoded_prompt = quote(full_prompt[:1800])
+                                url = f"https://text.pollinations.ai/{encoded_prompt}?model=openai"
+                                resp = requests.get(url, timeout=60)
+                                if resp.status_code == 200 and len(resp.text) > 50:
+                                    llm_output = resp.text
+                            except:
+                                pass
+                                
+                        # 6. Сохраняем в Google Sheets
+                        if llm_output and len(llm_output) > 50:
+                            clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
+                            clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
+                            sheets_db.write_df("llm_settings", clean_settings)
+                            sheets_db.clear_caches()
+                            st.success("Анализ сгенерирован и сохранен!")
+                            st.rerun()
+                        else:
+                            st.error("Все бесплатные провайдеры сейчас недоступны. Попробуйте обновить позже.")
+                            
+                    except Exception as e:
+                        st.error(f"An error occurred: {e}")
+        else:
+            st.markdown("**Сегодняшний анализ рынка:**")
+            st.container(border=True).markdown(saved_output)
