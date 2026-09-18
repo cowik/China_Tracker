@@ -18,13 +18,16 @@ SHEET_SCHEMAS = {
     "portfolios_meta": ["tab_name", "label"],
     "portfolio1_positions": ["ticker", "name", "asset_type", "weight", "purchase_date"],
     "portfolio2_positions": ["ticker", "name", "asset_type", "weight", "purchase_date"],
-    "watchlist_etfs": ["ticker", "name"],
+    "watchlist_etfs": ["ticker", "name", "index_code"],
     "dividends": ["portfolio", "ticker", "ex_date", "pay_date", "amount_per_share", "detected_on"],
     "transactions": ["date", "portfolio", "ticker", "type", "amount_note"],
     "backtest_history": ["date", "portfolio", "index_value"],
     "portfolio_settings": ["portfolio", "rebalance_frequency"],
     "display_order": ["label", "sort_order"],
     "price_cache": ["ticker", "asset_type", "date", "close"],
+    "strategies_meta": ["strategy_name", "linked_etfs", "manual_tickers"],
+    "index_constituents_cache": ["index_code", "stock_ticker", "stock_name", "weight", "as_of_date"],
+    "llm_settings": ["setting_name", "value", "last_updated"]
 }
 
 TICKER_COLUMNS = {"ticker"}
