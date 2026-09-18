@@ -411,7 +411,6 @@ elif section == "AI Market Analyst":
             except:
                 pass
 
-    # Ваш промпт по умолчанию
     default_prompt = "Составь короткий обзор рынка акций Китая (A-shares). Выдели ключевые новости и события. Используй китайские источники. Пиши как профессиональный аналитик по акциям, только по делу. Пиши на русском, названия на английском, без китайских знаков."
     
     new_prompt = st.text_area("Enter your prompt:", value=saved_prompt if saved_prompt else default_prompt, height=150)
@@ -434,7 +433,7 @@ elif section == "AI Market Analyst":
 
     if needs_generation:
         if st.button("Generate Fresh Analysis"):
-            with st.spinner("Поиск новостей и генерация анализа (это бесплатно)..."):
+            with st.spinner("Поиск новостей и генерация анализа..."):
                 try:
                     import xml.etree.ElementTree as ET
                     import json
@@ -456,17 +455,21 @@ elif section == "AI Market Analyst":
                     full_prompt = f"{new_prompt}\n\n--- LIVE NEWS HEADLINES ---\n{news_context}\n--- END NEWS ---\nPlease write your analysis now."
                     llm_output = ""
                     
-                    # 2. Try DuckDuckGo AI (GPT-4o-mini)
+                    # 2. Try DuckDuckGo AI (с обновленными заголовками)
                     try:
-                        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "x-vqd-accept": "1"}
+                        headers = {
+                            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "x-vqd-accept": "1",
+                            "Accept": "*/*",
+                            "Referer": "https://duckduckgo.com/"
+                        }
                         status_resp = requests.get("https://duckduckgo.com/duckchat/v1/status", headers=headers, timeout=10)
                         token = status_resp.headers.get("x-vqd-4")
                         
-                        if token:
+                        if token and status_resp.status_code == 200:
                             chat_url = "https://duckduckgo.com/duckchat/v1/chat"
                             payload = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": full_prompt}]}
-                            chat_headers = {"x-vqd-4": token, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-                            chat_resp = requests.post(chat_url, headers=chat_headers, json=payload, timeout=60)
+                            chat_resp = requests.post(chat_url, headers={**headers, "x-vqd-4": token}, json=payload, timeout=60)
                             
                             if chat_resp.status_code == 200:
                                 for line in chat_resp.text.split("\n"):
@@ -476,9 +479,20 @@ elif section == "AI Market Analyst":
                                             if "message" in data: llm_output += data["message"]
                                         except: pass
                     except:
-                        pass # Если DuckDuckGo упал, идем к резервному
+                        pass # Если DDG упал (405/403), идем к резерву
                     
-                    # 3. Fallback на Pollinations (если DDG заблокировал)
+                    # 3. Fallback на Pollinations (Новый API)
+                    if not llm_output or len(llm_output) < 50:
+                        try:
+                            url = "https://api.pollinations.ai/v1/chat/completions"
+                            payload = {"model": "openai", "messages": [{"role": "user", "content": full_prompt}]}
+                            resp = requests.post(url, json=payload, timeout=60)
+                            if resp.status_code == 200:
+                                llm_output = resp.json()["choices"][0]["message"]["content"]
+                        except:
+                            pass # Если и этот упал, идем к последнему резерву
+
+                    # 4. Последний резерв: Pollinations GET
                     if not llm_output or len(llm_output) < 50:
                         try:
                             encoded_prompt = quote(full_prompt[:1800])
@@ -489,7 +503,7 @@ elif section == "AI Market Analyst":
                         except:
                             pass
                             
-                    # 4. Сохраняем в Google Sheets
+                    # 5. Сохраняем в Google Sheets
                     if llm_output and len(llm_output) > 50:
                         clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
                         clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
@@ -498,7 +512,7 @@ elif section == "AI Market Analyst":
                         st.success("Анализ сгенерирован и сохранен!")
                         st.rerun()
                     else:
-                        st.error("Не удалось сгенерировать текст. Все бесплатные провайдеры сейчас заняты. Попробуйте позже.")
+                        st.error("Все бесплатные провайдеры сейчас недоступны. Попробуйте обновить позже.")
                         
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
