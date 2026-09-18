@@ -88,6 +88,11 @@ def positions_editor(tab_name: str, label: str):
         st.divider()
         st.subheader("⚖️ Rebalance (save live performance to backtest)")
         
+        # FIX: Add a date input so you can specify when the old portfolio ends
+        default_rebal_date = pd.Timestamp.now().normalize()
+        rebal_date = st.date_input("Rebalance Date", value=default_rebal_date, key=f"rebal_date_{tab_name}")
+        rebal_date = pd.Timestamp(rebal_date)
+        
         total_weight = df["weight"].sum()
         missing_dates = df["purchase_date"].isna().any()
         weights_valid = abs(total_weight - 100) <= 0.5
@@ -114,12 +119,20 @@ def positions_editor(tab_name: str, label: str):
                 backtest_index_values = load_backtest(label)
                 rebalance_freq = sheets_db.get_rebalance_frequency(label)
                 live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
-                live_index = returns.compute_live_index(holdings, price_data, rebalance_frequency=rebalance_freq, live_start_date=live_start_date)
+                
+                # FIX: Pass rebal_date as end_date so it only calculates up to that date
+                live_index = returns.compute_live_index(
+                    holdings, price_data, 
+                    rebalance_frequency=rebalance_freq, 
+                    live_start_date=live_start_date,
+                    end_date=rebal_date
+                )
                 combined = returns.chain_link_backtest(backtest_index_values, live_index)
                 
-                # FIX: Drop duplicates in combined before proceeding
+                # FIX: Drop duplicates AND remove any dates after the Rebalance Date
                 if not combined.empty:
                     combined = combined[~combined.index.duplicated(keep='last')]
+                    combined = combined[combined.index <= rebal_date]
                     
                 if combined.empty:
                     st.warning("Could not compute combined index.")
@@ -135,7 +148,7 @@ def positions_editor(tab_name: str, label: str):
                     combined_df = pd.concat([existing, rebalance_df[["date", "portfolio", "index_value"]]], ignore_index=True)
                     sheets_db.write_df("backtest_history", combined_df)
                     sheets_db.clear_caches()
-                    st.success(f"✅ Rebalance complete! {label} backtest now includes performance up to today.")
+                    st.success(f"✅ Rebalance complete! {label} backtest now includes performance up to {rebal_date.strftime('%Y-%m-%d')}.")
                     st.rerun()
 
 def load_backtest(portfolio_label: str) -> pd.Series:
