@@ -390,7 +390,7 @@ elif section == "Export Chart to Excel":
                 st.error(f"Could not build Excel: {e}")
 
 elif section == "AI Market Analyst":
-    st.subheader("🤖 AI Market Analyst (GPT-4o + Live Search)")
+    st.subheader("🤖 AI Market Analyst (GPT-4o-mini + Live Search)")
     st.caption("Input a fixed prompt. The LLM will search the web for live news and generate a new answer daily. No API keys required.")
     
     # Load saved prompt
@@ -435,57 +435,42 @@ elif section == "AI Market Analyst":
     else:
         if needs_generation:
             if st.button("Generate Fresh Analysis"):
-                with st.spinner("Searching the web for live news and generating analysis via GPT-4o..."):
+                with st.spinner("Searching the web for live news and generating analysis via GPT-4o-mini..."):
                     try:
-                        # 1. Fetch live news from Google News RSS (No API Key)
+                        # 1. Fetch live news from Google News RSS
                         import xml.etree.ElementTree as ET
                         news_context = ""
                         try:
                             rss_url = "https://news.google.com/rss/search?q=China+stock+market&hl=en-US&gl=US&ceid=US:en"
                             r_news = requests.get(rss_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
                             root = ET.fromstring(r_news.content)
-                            items = root.findall('.//item')[:5]
+                            items = root.findall('.//item')[:3]  # Take only 3 items to avoid URL limits
                             for item in items:
                                 title = item.find('title').text if item.find('title') is not None else ""
-                                desc = item.find('description').text if item.find('description') is not None else ""
-                                news_context += f"Title: {title}\nBody: {desc}\n\n"
+                                news_context += f"Title: {title}\n"
                         except Exception:
                             news_context = "Could not fetch live news."
 
-                        if not news_context:
-                            news_context = "No live news found today."
-                        
-                        # 2. Construct full prompt with live news injected
+                        # 2. Construct full prompt and truncate to 1800 chars max (GET URL limit)
                         full_prompt = f"{new_prompt}\n\n--- LIVE NEWS CONTEXT ---\n{news_context}\n--- END NEWS CONTEXT ---\nPlease write your analysis now."
+                        full_prompt = full_prompt[:1800] 
                         
-                        # 3. Call Pollinations AI via POST (OpenAI compatible format, GPT-4o proxy)
-                        url = "https://text.pollinations.ai/openai"
-                        payload = {
-                            "model": "openai-large",  # GPT-4o model proxy
-                            "messages": [{"role": "user", "content": full_prompt}]
-                        }
-                        response = requests.post(url, json=payload, timeout=60)
+                        # 3. Call Pollinations AI via GET (OpenAI GPT-4o-mini proxy)
+                        from urllib.parse import quote
+                        encoded_prompt = quote(full_prompt)
+                        url = f"https://text.pollinations.ai/{encoded_prompt}?model=openai"
+                        response = requests.get(url, timeout=60)
                         
-                        if response.status_code == 200:
-                            llm_output = ""
-                            try:
-                                data = response.json()
-                                if 'choices' in data and len(data['choices']) > 0:
-                                    llm_output = data['choices'][0]['message']['content']
-                            except:
-                                # Fallback if API returns plain text instead of JSON
-                                llm_output = response.text
-                                
-                            if llm_output and len(llm_output) > 20:
-                                # Save output to Google Sheets to cache for the day
-                                clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
-                                clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
-                                sheets_db.write_df("llm_settings", clean_settings)
-                                sheets_db.clear_caches()
-                                st.success("Generated fresh analysis!")
-                                st.rerun()
-                            else:
-                                st.error("LLM returned an empty response. Try again in a minute.")
+                        if response.status_code == 200 and len(response.text) > 50:
+                            llm_output = response.text
+                            
+                            # Save output to Google Sheets to cache for the day
+                            clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
+                            clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
+                            sheets_db.write_df("llm_settings", clean_settings)
+                            sheets_db.clear_caches()
+                            st.success("Generated fresh analysis!")
+                            st.rerun()
                         else:
                             st.error(f"LLM Generation failed. Status: {response.status_code}")
                     except Exception as e:
