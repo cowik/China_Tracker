@@ -355,3 +355,44 @@ def get_etf_hist(ticker: str, start_date: str = "1990-01-01", end_date: str = "2
 
 def get_dividends(ticker: str, asset_type: str) -> pd.DataFrame:
     return pd.DataFrame()
+
+import requests
+
+def fetch_index_constituents(index_code: str) -> list[dict]:
+    """
+    Fetches the live constituent stocks and weights for a given Chinese index code
+    (e.g., '000300' for CSI 300, '399006' for ChiNext) directly from Eastmoney Datacenter.
+    Includes a strict 10-second timeout to prevent hanging.
+    """
+    # Determine if it's a Shanghai (.SH) or Shenzhen (.SZ) index
+    code_str = str(index_code).strip()
+    suffix = ".SH" if code_str.startswith("000") else ".SZ"
+    
+    url = (
+        f"https://datacenter-web.eastmoney.com/api/data/v1/get?"
+        f"reportName=RPT_INDEXCOMPOSITION&columns=SECURITY_CODE,SECURITY_NAME_ABBR,WEIGHT"
+        f"&filter=(SECUCODE=\"{code_str}{suffix}\")&pageNumber=1&pageSize=500"
+        f"&sortColumns=WEIGHT&sortTypes=-1"
+    )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://data.eastmoney.com/"
+    }
+    
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("success") and data.get("result") and data["result"].get("data"):
+            rows = data["result"]["data"]
+            holdings = []
+            for row in rows[:10]:  # Top 10 holdings
+                holdings.append({
+                    "stock_ticker": str(row.get("SECURITY_CODE", "")).zfill(6),
+                    "stock_name": row.get("SECURITY_NAME_ABBR", ""),
+                    "weight": round(float(row.get("WEIGHT", 0)), 2)
+                })
+            return holdings
+    except Exception as e:
+        print(f"Failed to fetch index {index_code}: {e}")
+    return []
