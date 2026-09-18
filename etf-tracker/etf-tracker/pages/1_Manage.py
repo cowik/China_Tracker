@@ -391,7 +391,7 @@ elif section == "Export Chart to Excel":
                 st.error(f"Could not build Excel: {e}")
 
 elif section == "AI Market Analyst":
-    st.subheader("🤖 AI Market Analyst (Llama 3 + Live Search)")
+    st.subheader("🤖 AI Market Analyst (Gemini 2.0 Flash + Live Search)")
     st.caption("Input a fixed prompt. The LLM will search the web for live news and generate a new answer daily.")
     
     # Load saved prompt
@@ -419,7 +419,7 @@ elif section == "AI Market Analyst":
         clean_settings = settings_df[settings_df["setting_name"] != "prompt"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
         clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "prompt", "value": new_prompt, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d")}])], ignore_index=True)
         sheets_db.write_df("llm_settings", clean_settings)
-        sheets_db.clear_caches()  # FIX: Clear cache so app sees new prompt
+        sheets_db.clear_caches()
         st.success("Prompt saved!")
         st.rerun()
 
@@ -431,12 +431,15 @@ elif section == "AI Market Analyst":
         if last_updated.date() == datetime.date.today():
             needs_generation = False
 
-    if not new_prompt:
+    api_key = st.secrets.get("openrouter_api_key")
+    if not api_key:
+        st.error("Please add `openrouter_api_key = \"YOUR_KEY\"` to your Streamlit Secrets.")
+    elif not new_prompt:
         st.warning("Please save a prompt first.")
     else:
         if needs_generation:
             if st.button("Generate Fresh Analysis"):
-                with st.spinner("Searching the web for live news and generating analysis..."):
+                with st.spinner("Searching the web for live news and generating analysis via Gemini 2.0..."):
                     try:
                         # 1. Fetch live news from Google News RSS
                         import xml.etree.ElementTree as ET
@@ -459,36 +462,37 @@ elif section == "AI Market Analyst":
                         # 2. Construct full prompt with live news injected
                         full_prompt = f"{new_prompt}\n\n--- LIVE NEWS CONTEXT ---\n{news_context}\n--- END NEWS CONTEXT ---\nPlease write your analysis now."
                         
-                        # 3. Call Pollinations AI via POST
-                        url = "https://text.pollinations.ai/openai"
+                        # 3. Call OpenRouter API (Gemini 2.0 Flash Free)
+                        url = "https://openrouter.ai/api/v1/chat/completions"
+                        headers = {
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        }
                         payload = {
-                            "model": "openai",
+                            "model": "google/gemini-2.0-flash-exp:free",  # Free Gemini 2.0 Flash
                             "messages": [{"role": "user", "content": full_prompt}]
                         }
-                        response = requests.post(url, json=payload, timeout=60)
+                        response = requests.post(url, headers=headers, json=payload, timeout=60)
                         
                         if response.status_code == 200:
-                            llm_output = ""
-                            try:
-                                data = response.json()
-                                if 'choices' in data and len(data['choices']) > 0:
-                                    llm_output = data['choices'][0]['message']['content']
-                            except:
-                                # FIX: Fallback if API returns plain text instead of JSON
-                                llm_output = response.text
+                            data = response.json()
+                            if 'choices' in data and len(data['choices']) > 0:
+                                llm_output = data['choices'][0]['message']['content']
                                 
-                            if llm_output and len(llm_output) > 20:
-                                # Save output to Google Sheets to cache for the day
-                                clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
-                                clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
-                                sheets_db.write_df("llm_settings", clean_settings)
-                                sheets_db.clear_caches()  # FIX: Clear cache so app sees new output
-                                st.success("Generated fresh analysis!")
-                                st.rerun()
+                                if llm_output and len(llm_output) > 20:
+                                    # Save output to Google Sheets to cache for the day
+                                    clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
+                                    clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
+                                    sheets_db.write_df("llm_settings", clean_settings)
+                                    sheets_db.clear_caches()
+                                    st.success("Generated fresh analysis!")
+                                    st.rerun()
+                                else:
+                                    st.error("LLM returned an empty response.")
                             else:
-                                st.error("LLM returned an empty response.")
+                                st.error("LLM returned an unexpected response format.")
                         else:
-                            st.error(f"LLM Generation failed. Status: {response.status_code}")
+                            st.error(f"LLM Generation failed. Status: {response.status_code} - {response.text}")
                     except Exception as e:
                         st.error(f"An error occurred: {e}")
         else:
