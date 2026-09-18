@@ -390,8 +390,8 @@ elif section == "Export Chart to Excel":
                 st.error(f"Could not build Excel: {e}")
 
 elif section == "AI Market Analyst":
-    st.subheader("🤖 AI Market Analyst (GPT-4o-mini + Live Search)")
-    st.caption("Input a fixed prompt. The LLM will search the web for live news and generate a new answer daily. No API keys required.")
+    st.subheader("🤖 AI Market Analyst")
+    st.caption("Анализ генерируется без API-ключей и сохраняется в Google Sheets на весь день.")
     
     # Load saved prompt
     settings_df = sheets_db.read_df("llm_settings")
@@ -411,8 +411,10 @@ elif section == "AI Market Analyst":
             except:
                 pass
 
-    # Prompt Input
-    new_prompt = st.text_area("Enter your fixed system prompt:", value=saved_prompt, height=200, help="e.g. 'You are a financial analyst. Analyze the Chinese market...'")
+    # Ваш промпт по умолчанию
+    default_prompt = "Составь короткий обзор рынка акций Китая (A-shares). Выдели ключевые новости и события. Используй китайские источники. Пиши как профессиональный аналитик по акциям, только по делу. Пиши на русском, названия на английском, без китайских знаков."
+    
+    new_prompt = st.text_area("Enter your prompt:", value=saved_prompt if saved_prompt else default_prompt, height=150)
     
     if st.button("Save Prompt"):
         clean_settings = settings_df[settings_df["setting_name"] != "prompt"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
@@ -430,51 +432,76 @@ elif section == "AI Market Analyst":
         if last_updated.date() == datetime.date.today():
             needs_generation = False
 
-    if not new_prompt:
-        st.warning("Please save a prompt first.")
-    else:
-        if needs_generation:
-            if st.button("Generate Fresh Analysis"):
-                with st.spinner("Searching the web for live news and generating analysis via GPT-4o-mini..."):
+    if needs_generation:
+        if st.button("Generate Fresh Analysis"):
+            with st.spinner("Поиск новостей и генерация анализа (это бесплатно)..."):
+                try:
+                    import xml.etree.ElementTree as ET
+                    import json
+                    from urllib.parse import quote
+                    
+                    # 1. Fetch live news
+                    news_context = ""
                     try:
-                        # 1. Fetch live news from Google News RSS
-                        import xml.etree.ElementTree as ET
-                        news_context = ""
-                        try:
-                            rss_url = "https://news.google.com/rss/search?q=China+stock+market&hl=en-US&gl=US&ceid=US:en"
-                            r_news = requests.get(rss_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-                            root = ET.fromstring(r_news.content)
-                            items = root.findall('.//item')[:3]  # Take only 3 items to avoid URL limits
-                            for item in items:
-                                title = item.find('title').text if item.find('title') is not None else ""
-                                news_context += f"Title: {title}\n"
-                        except Exception:
-                            news_context = "Could not fetch live news."
+                        rss_url = "https://news.google.com/rss/search?q=China+stock+market&hl=en-US&gl=US&ceid=US:en"
+                        r_news = requests.get(rss_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                        root = ET.fromstring(r_news.content)
+                        items = root.findall('.//item')[:5]
+                        for item in items:
+                            title = item.find('title').text if item.find('title') is not None else ""
+                            news_context += f"Title: {title}\n"
+                    except:
+                        news_context = "Could not fetch live news."
 
-                        # 2. Construct full prompt and truncate to 1800 chars max (GET URL limit)
-                        full_prompt = f"{new_prompt}\n\n--- LIVE NEWS CONTEXT ---\n{news_context}\n--- END NEWS CONTEXT ---\nPlease write your analysis now."
-                        full_prompt = full_prompt[:1800] 
+                    full_prompt = f"{new_prompt}\n\n--- LIVE NEWS HEADLINES ---\n{news_context}\n--- END NEWS ---\nPlease write your analysis now."
+                    llm_output = ""
+                    
+                    # 2. Try DuckDuckGo AI (GPT-4o-mini)
+                    try:
+                        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "x-vqd-accept": "1"}
+                        status_resp = requests.get("https://duckduckgo.com/duckchat/v1/status", headers=headers, timeout=10)
+                        token = status_resp.headers.get("x-vqd-4")
                         
-                        # 3. Call Pollinations AI via GET (OpenAI GPT-4o-mini proxy)
-                        from urllib.parse import quote
-                        encoded_prompt = quote(full_prompt)
-                        url = f"https://text.pollinations.ai/{encoded_prompt}?model=openai"
-                        response = requests.get(url, timeout=60)
-                        
-                        if response.status_code == 200 and len(response.text) > 50:
-                            llm_output = response.text
+                        if token:
+                            chat_url = "https://duckduckgo.com/duckchat/v1/chat"
+                            payload = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": full_prompt}]}
+                            chat_headers = {"x-vqd-4": token, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                            chat_resp = requests.post(chat_url, headers=chat_headers, json=payload, timeout=60)
                             
-                            # Save output to Google Sheets to cache for the day
-                            clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
-                            clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
-                            sheets_db.write_df("llm_settings", clean_settings)
-                            sheets_db.clear_caches()
-                            st.success("Generated fresh analysis!")
-                            st.rerun()
-                        else:
-                            st.error(f"LLM Generation failed. Status: {response.status_code}")
-                    except Exception as e:
-                        st.error(f"An error occurred: {e}")
-        else:
-            st.markdown("**Today's AI Analysis:**")
-            st.container(border=True).markdown(saved_output)
+                            if chat_resp.status_code == 200:
+                                for line in chat_resp.text.split("\n"):
+                                    if line.startswith("data: "):
+                                        try:
+                                            data = json.loads(line[6:])
+                                            if "message" in data: llm_output += data["message"]
+                                        except: pass
+                    except:
+                        pass # Если DuckDuckGo упал, идем к резервному
+                    
+                    # 3. Fallback на Pollinations (если DDG заблокировал)
+                    if not llm_output or len(llm_output) < 50:
+                        try:
+                            encoded_prompt = quote(full_prompt[:1800])
+                            url = f"https://text.pollinations.ai/{encoded_prompt}?model=openai"
+                            resp = requests.get(url, timeout=60)
+                            if resp.status_code == 200 and len(resp.text) > 50:
+                                llm_output = resp.text
+                        except:
+                            pass
+                            
+                    # 4. Сохраняем в Google Sheets
+                    if llm_output and len(llm_output) > 50:
+                        clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
+                        clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
+                        sheets_db.write_df("llm_settings", clean_settings)
+                        sheets_db.clear_caches()
+                        st.success("Анализ сгенерирован и сохранен!")
+                        st.rerun()
+                    else:
+                        st.error("Не удалось сгенерировать текст. Все бесплатные провайдеры сейчас заняты. Попробуйте позже.")
+                        
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
+    else:
+        st.markdown("**Сегодняшний анализ рынка:**")
+        st.container(border=True).markdown(saved_output)
