@@ -390,8 +390,15 @@ elif section == "Export Chart to Excel":
                 st.error(f"Could not build Excel: {e}")
 
 elif section == "AI Market Analyst":
-    st.subheader("🤖 AI Market Analyst (Gemini 2.0 Flash + Live Search)")
+    st.subheader("🤖 AI Market Analyst (Live Search)")
     st.caption("Input a fixed prompt. The LLM will search the web for live news and generate a new answer daily.")
+    
+    # Model Selector
+    model_name = st.text_input(
+        "OpenRouter Model Name", 
+        value="meta-llama/llama-3.3-70b-instruct:free", 
+        help="You can use any free model from OpenRouter. Examples: 'google/gemini-flash-1.5:free', 'deepseek/deepseek-chat:free', 'qwen/qwen-2.5-72b-instruct:free'"
+    )
     
     # Load saved prompt
     settings_df = sheets_db.read_df("llm_settings")
@@ -438,7 +445,7 @@ elif section == "AI Market Analyst":
     else:
         if needs_generation:
             if st.button("Generate Fresh Analysis"):
-                with st.spinner("Searching the web for live news and generating analysis via Gemini 2.0..."):
+                with st.spinner(f"Searching the web for live news and generating analysis via {model_name}..."):
                     try:
                         # 1. Fetch live news from Google News RSS
                         import xml.etree.ElementTree as ET
@@ -461,14 +468,14 @@ elif section == "AI Market Analyst":
                         # 2. Construct full prompt with live news injected
                         full_prompt = f"{new_prompt}\n\n--- LIVE NEWS CONTEXT ---\n{news_context}\n--- END NEWS CONTEXT ---\nPlease write your analysis now."
                         
-                        # 3. Call OpenRouter API (Gemini 2.0 Flash Free)
+                        # 3. Call OpenRouter API
                         url = "https://openrouter.ai/api/v1/chat/completions"
                         headers = {
                             "Authorization": f"Bearer {api_key}",
                             "Content-Type": "application/json"
                         }
                         payload = {
-                            "model": "google/gemini-2.0-flash-exp:free",  # Free Gemini 2.0 Flash
+                            "model": model_name,  # Uses the model selected in the UI
                             "messages": [{"role": "user", "content": full_prompt}]
                         }
                         response = requests.post(url, headers=headers, json=payload, timeout=60)
