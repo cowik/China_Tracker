@@ -4,9 +4,6 @@ import os
 import io
 import openpyxl
 from openpyxl.chart import LineChart, Reference
-import datetime
-import requests
-from urllib.parse import quote
 
 from utils import sheets_db, data_fetch, returns, auth
 
@@ -16,7 +13,7 @@ auth.require_password()
 st.title("🔧 Manage")
 
 PORTFOLIOS = sheets_db.get_portfolios()
-sections = list(PORTFOLIOS.values()) + ["Watchlist ETFs", "Strategies", "Backtest history upload", "Manage Portfolios", "Reorder Items", "Export Chart to Excel", "AI Market Analyst"]
+sections = list(PORTFOLIOS.values()) + ["Watchlist ETFs", "Backtest history upload", "Manage Portfolios", "Reorder Items", "Export Chart to Excel"]
 section = st.sidebar.radio("Section", sections)
 
 POSITION_COLS = {
@@ -36,6 +33,7 @@ REBALANCE_OPTIONS = {
 }
 
 def _deduplicate_index_data(data):
+    """Helper to remove duplicate dates from DataFrames, Series, or dicts of them."""
     if isinstance(data, pd.DataFrame):
         return data[~data.index.duplicated(keep='last')]
     elif isinstance(data, pd.Series):
@@ -79,6 +77,7 @@ def positions_editor(tab_name: str, label: str):
     if st.button("Save changes", key=f"save_{tab_name}"):
         clean = edited.dropna(subset=["ticker"]).copy()
         clean["ticker"] = clean["ticker"].astype(str).str.strip()
+        # FIX: Safely convert dates to strings, replacing NaT with empty string
         clean["purchase_date"] = pd.to_datetime(clean["purchase_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna('')
         sheets_db.write_df(tab_name, clean)
         sheets_db.clear_caches()
@@ -89,6 +88,7 @@ def positions_editor(tab_name: str, label: str):
         st.divider()
         st.subheader("⚖️ Rebalance (save live performance to backtest)")
         
+        # FIX: Add a date input so you can specify when the old portfolio ends
         default_rebal_date = pd.Timestamp.now().normalize()
         rebal_date = st.date_input("Rebalance Date", value=default_rebal_date, key=f"rebal_date_{tab_name}")
         rebal_date = pd.Timestamp(rebal_date)
@@ -113,15 +113,23 @@ def positions_editor(tab_name: str, label: str):
                 st.warning("No valid positions to rebalance.")
             else:
                 price_data = data_fetch.get_prices_batch(holdings)
+                # FIX: Sanitize price data to remove duplicate dates
                 price_data = _deduplicate_index_data(price_data)
                 
                 backtest_index_values = load_backtest(label)
                 rebalance_freq = sheets_db.get_rebalance_frequency(label)
                 live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
                 
-                live_index = returns.compute_live_index(holdings, price_data, rebalance_frequency=rebalance_freq, live_start_date=live_start_date, end_date=rebal_date)
+                # FIX: Pass rebal_date as end_date so it only calculates up to that date
+                live_index = returns.compute_live_index(
+                    holdings, price_data, 
+                    rebalance_frequency=rebalance_freq, 
+                    live_start_date=live_start_date,
+                    end_date=rebal_date
+                )
                 combined = returns.chain_link_backtest(backtest_index_values, live_index)
                 
+                # FIX: Drop duplicates AND remove any dates after the Rebalance Date
                 if not combined.empty:
                     combined = combined[~combined.index.duplicated(keep='last')]
                     combined = combined[combined.index <= rebal_date]
@@ -145,11 +153,14 @@ def positions_editor(tab_name: str, label: str):
 
 def load_backtest(portfolio_label: str) -> pd.Series:
     df = sheets_db.read_df("backtest_history")
-    if df.empty: return pd.Series(dtype=float)
+    if df.empty:
+        return pd.Series(dtype=float)
     df = df[df["portfolio"] == portfolio_label].copy()
-    if df.empty: return pd.Series(dtype=float)
+    if df.empty:
+        return pd.Series(dtype=float)
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date")
+    # FIX: Drop duplicate dates to prevent reindex errors
     df = df.drop_duplicates(subset=["date"], keep="last")
     return pd.Series(pd.to_numeric(df["index_value"], errors="coerce").values, index=df["date"])
 
@@ -159,28 +170,55 @@ def load_holdings_export(tab_name: str) -> list[dict]:
     holdings = []
     for _, row in df.iterrows():
         try:
-            holdings.append({"ticker": str(row["ticker"]).strip(), "asset_type": str(row.get("asset_type", "stock")).strip().lower() or "stock", "weight": float(row["weight"]) / 100.0, "inception_date": pd.to_datetime(row["purchase_date"])})
-        except: continue
+            holdings.append({
+                "ticker": str(row["ticker"]).strip(),
+                "asset_type": str(row.get("asset_type", "stock")).strip().lower() or "stock",
+                "weight": float(row["weight"]) / 100.0,
+                "inception_date": pd.to_datetime(row["purchase_date"]),
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
     return holdings
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _compute_portfolio_index_cached(tab_name: str, portfolio_label: str, holdings_key: tuple) -> pd.Series:
-    holdings = [{"ticker": t, "asset_type": at, "weight": w, "inception_date": pd.Timestamp(d)} for t, at, w, d in holdings_key]
+    holdings = [
+        {"ticker": t, "asset_type": at, "weight": w, "inception_date": pd.Timestamp(d)}
+        for t, at, w, d in holdings_key
+    ]
     price_data = data_fetch.get_prices_batch(holdings)
+    # FIX: Sanitize price data
     price_data = _deduplicate_index_data(price_data)
+    
     backtest_index_values = load_backtest(portfolio_label)
     rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
     live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
-    live_index = returns.compute_live_index(holdings, price_data, rebalance_frequency=rebalance_freq, live_start_date=live_start_date)
+
+    live_index = returns.compute_live_index(
+        holdings, price_data,
+        rebalance_frequency=rebalance_freq,
+        live_start_date=live_start_date,
+    )
     if live_index.empty and holdings:
-        live_index = returns.compute_live_index(holdings, price_data, rebalance_frequency=rebalance_freq, live_start_date=None)
-        if not live_index.empty and live_start_date is not None: live_index = live_index[live_index.index >= live_start_date]
+        live_index = returns.compute_live_index(
+            holdings, price_data,
+            rebalance_frequency=rebalance_freq,
+            live_start_date=None,
+        )
+        if not live_index.empty and live_start_date is not None:
+            live_index = live_index[live_index.index >= live_start_date]
+            
     combined = returns.chain_link_backtest(backtest_index_values, live_index)
-    if not combined.empty: combined = combined[~combined.index.duplicated(keep='last')]
+    # FIX: Drop duplicates in final combined output
+    if not combined.empty:
+        combined = combined[~combined.index.duplicated(keep='last')]
     return combined
 
 def compute_portfolio_index_export(tab_name: str, portfolio_label: str, holdings: list[dict]) -> pd.Series:
-    holdings_key = tuple((h["ticker"], h["asset_type"], h["weight"], pd.Timestamp(h["inception_date"])) for h in holdings)
+    holdings_key = tuple(
+        (h["ticker"], h["asset_type"], h["weight"], pd.Timestamp(h["inception_date"]))
+        for h in holdings
+    )
     return _compute_portfolio_index_cached(tab_name, portfolio_label, holdings_key)
 
 def build_series_options_export() -> dict:
@@ -201,35 +239,73 @@ def build_series_options_export() -> dict:
 
 def slice_by_period(chart_series: pd.Series, period: str) -> pd.Series:
     chart_series = chart_series.dropna()
-    if chart_series.empty: return chart_series
+    if chart_series.empty:
+        return chart_series
     last_date = chart_series.index.max()
-    if period == "5D": start_date = last_date - pd.Timedelta(days=5)
-    elif period == "1M": start_date = last_date - pd.DateOffset(months=1)
-    elif period == "3M": start_date = last_date - pd.DateOffset(months=3)
-    elif period == "6M": start_date = last_date - pd.DateOffset(months=6)
-    elif period == "YTD": start_date = pd.Timestamp(year=last_date.year, month=1, day=1)
-    elif period == "1Y": start_date = last_date - pd.DateOffset(years=1)
-    elif period == "2Y": start_date = last_date - pd.DateOffset(years=2)
-    elif period == "3Y": start_date = last_date - pd.DateOffset(years=3)
-    elif period == "5Y": start_date = last_date - pd.DateOffset(years=5)
-    else: start_date = chart_series.index.min()
+    if period == "5D":
+        start_date = last_date - pd.Timedelta(days=5)
+    elif period == "1M":
+        start_date = last_date - pd.DateOffset(months=1)
+    elif period == "3M":
+        start_date = last_date - pd.DateOffset(months=3)
+    elif period == "6M":
+        start_date = last_date - pd.DateOffset(months=6)
+    elif period == "YTD":
+        start_date = pd.Timestamp(year=last_date.year, month=1, day=1)
+    elif period == "1Y":
+        start_date = last_date - pd.DateOffset(years=1)
+    elif period == "2Y":
+        start_date = last_date - pd.DateOffset(years=2)
+    elif period == "3Y":
+        start_date = last_date - pd.DateOffset(years=3)
+    elif period == "5Y":
+        start_date = last_date - pd.DateOffset(years=5)
+    else:
+        start_date = chart_series.index.min()
     return chart_series[chart_series.index >= start_date]
 
 def build_excel_bytes(label: str, chart_series: pd.Series, period: str) -> bytes:
     view = slice_by_period(chart_series, period)
-    if view.empty or len(view) < 2: raise ValueError("Not enough data to export for the selected period.")
+    if view.empty or len(view) < 2:
+        raise ValueError("Not enough data to export for the selected period.")
     rebased = (view / view.iloc[0] - 1) * 100
-    df = pd.DataFrame({"Date": view.index, "Index Value": view.values, "Total Return (%)": rebased.values})
+    df = pd.DataFrame({
+        "Date": view.index,
+        "Index Value": view.values,
+        "Total Return (%)": rebased.values,
+    })
     df["Date"] = pd.to_datetime(df["Date"]).dt.date
-    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Chart Data"
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Chart Data"
     ws.append(["Date", "Index Value", "Total Return (%)"])
-    for _, row in df.iterrows(): ws.append([row["Date"], float(row["Index Value"]), round(float(row["Total Return (%)"]), 4)])
-    for r in range(2, len(df) + 2): ws.cell(row=r, column=1).number_format = "yyyy-mm-dd"
-    chart = LineChart(); chart.title = f"{label} - Total Return % ({period})"; chart.y_axis.title = "Total return (%)"; chart.x_axis.title = "Date"; chart.height = 12; chart.width = 24
-    data_ref = Reference(ws, min_col=3, min_row=1, max_row=len(df) + 1, max_col=3); cats_ref = Reference(ws, min_col=1, min_row=2, max_row=len(df) + 1)
-    chart.add_data(data_ref, titles_from_data=True); chart.set_categories(cats_ref); chart.legend = None
-    ws_chart = wb.create_sheet("Chart"); ws_chart.add_chart(chart, "A1")
-    buf = io.BytesIO(); wb.save(buf); buf.seek(0); return buf.getvalue()
+    for _, row in df.iterrows():
+        ws.append([row["Date"], float(row["Index Value"]), round(float(row["Total Return (%)"]), 4)])
+
+    for r in range(2, len(df) + 2):
+        ws.cell(row=r, column=1).number_format = "yyyy-mm-dd"
+
+    chart = LineChart()
+    chart.title = f"{label} - Total Return % ({period})"
+    chart.y_axis.title = "Total return (%)"
+    chart.x_axis.title = "Date"
+    chart.height = 12
+    chart.width = 24
+
+    data_ref = Reference(ws, min_col=3, min_row=1, max_row=len(df) + 1, max_col=3)
+    cats_ref = Reference(ws, min_col=1, min_row=2, max_row=len(df) + 1)
+    chart.add_data(data_ref, titles_from_data=True)
+    chart.set_categories(cats_ref)
+    chart.legend = None
+
+    ws_chart = wb.create_sheet("Chart")
+    ws_chart.add_chart(chart, "A1")
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
 # ------------------------------------------------------------------------------------
 
 if section in PORTFOLIOS.values():
@@ -239,43 +315,19 @@ if section in PORTFOLIOS.values():
 elif section == "Watchlist ETFs":
     st.subheader("Watchlist ETFs")
     df = sheets_db.read_df("watchlist_etfs")
-    cols = {
-        "ticker": st.column_config.TextColumn("Ticker", help="e.g. 510300"), 
-        "name": st.column_config.TextColumn("Name"),
-        "index_code": st.column_config.TextColumn("Index Code", help="Underlying index code, e.g. 000300")
-    }
+    cols = {"ticker": st.column_config.TextColumn("Ticker", help="e.g. 510300"), "name": st.column_config.TextColumn("Name")}
     for col in cols:
-        if col not in df.columns: df[col] = None
-    if not df.empty and "ticker" in df.columns: df["ticker"] = df["ticker"].astype(str).str.strip()
+        if col not in df.columns:
+            df[col] = None
+    if not df.empty and "ticker" in df.columns:
+        df["ticker"] = df["ticker"].astype(str).str.strip()
     edited = st.data_editor(df[list(cols.keys())], column_config=cols, num_rows="dynamic", use_container_width=True, key="editor_watchlist")
     if st.button("Save changes", key="save_watchlist"):
         clean = edited.dropna(subset=["ticker"]).copy()
         clean["ticker"] = clean["ticker"].astype(str).str.strip()
-        clean["index_code"] = clean["index_code"].fillna("").astype(str).str.strip()
         sheets_db.write_df("watchlist_etfs", clean)
         sheets_db.clear_caches()
         st.success("Saved.")
-        st.rerun()
-
-elif section == "Strategies":
-    st.subheader("Strategies")
-    st.caption("Create strategies with linked ETFs and manual asset lists.")
-    df = sheets_db.read_df("strategies_meta")
-    cols = {
-        "strategy_name": st.column_config.TextColumn("Strategy Name"),
-        "linked_etfs": st.column_config.TextColumn("Linked ETFs", help="Comma-separated ETF tickers, e.g. 510300,159915"),
-        "manual_tickers": st.column_config.TextColumn("Manual Tickers", help="Comma-separated stock tickers")
-    }
-    for col in cols:
-        if col not in df.columns: df[col] = None
-    edited = st.data_editor(df[list(cols.keys())], column_config=cols, num_rows="dynamic", use_container_width=True, key="editor_strat")
-    if st.button("Save Strategy", key="save_strat"):
-        clean = edited.dropna(subset=["strategy_name"]).copy()
-        clean["linked_etfs"] = clean["linked_etfs"].fillna("").astype(str).str.strip()
-        clean["manual_tickers"] = clean["manual_tickers"].fillna("").astype(str).str.strip()
-        sheets_db.write_df("strategies_meta", clean)
-        sheets_db.clear_caches()
-        st.success("Saved Strategies.")
         st.rerun()
 
 elif section == "Backtest history upload":
@@ -289,6 +341,7 @@ elif section == "Backtest history upload":
         pd.DataFrame(columns=["Date", "Portfolio", "Index Value"]).to_excel(template_path, index=False, sheet_name="Backtest Data")
     with open(template_path, "rb") as f:
         st.download_button("Download blank template", f, file_name="backtest_template.xlsx")
+
     uploaded = st.file_uploader("Upload filled-in template", type=["xlsx"])
     if uploaded is not None:
         try:
@@ -301,40 +354,47 @@ elif section == "Backtest history upload":
                 new_data["Date"] = pd.to_datetime(new_data["Date"], errors="coerce")
             new_data = new_data.dropna(subset=["Date", "Index Value", "Portfolio"])
         except Exception as e:
-            st.error(f"Couldn't read that file: {e}"); new_data = None
+            st.error(f"Couldn't read that file: {e}")
+            new_data = None
+
         if new_data is not None:
             required = {"Date", "Portfolio", "Index Value"}
             if not required.issubset(new_data.columns):
                 st.error(f"Missing columns. Found: {list(new_data.columns)}")
             else:
                 bad = set(new_data["Portfolio"]) - set(allowed_portfolios)
-                if bad: st.error(f"Unrecognized portfolio(s): {bad}. Must match exactly.")
+                if bad:
+                    st.error(f"Unrecognized portfolio(s): {bad}. Must match an existing portfolio name exactly.")
                 else:
                     st.dataframe(new_data, use_container_width=True)
                     if st.button("Confirm and save"):
                         existing = sheets_db.read_df("backtest_history")
                         uploaded_pf = set(new_data["Portfolio"])
-                        if not existing.empty: existing = existing[~existing["portfolio"].isin(uploaded_pf)]
+                        if not existing.empty:
+                            existing = existing[~existing["portfolio"].isin(uploaded_pf)]
                         new_data = new_data.rename(columns={"Date": "date", "Portfolio": "portfolio", "Index Value": "index_value"})
                         new_data["date"] = pd.to_datetime(new_data["date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna('')
                         new_data["index_value"] = pd.to_numeric(new_data["index_value"], errors="coerce")
                         combined_df = pd.concat([existing, new_data[["date", "portfolio", "index_value"]]], ignore_index=True)
                         sheets_db.write_df("backtest_history", combined_df)
                         sheets_db.clear_caches()
-                        st.success("Backtest history saved."); st.rerun()
+                        st.success("Backtest history saved.")
+                        st.rerun()
+
     st.divider()
     st.write("Current stored backtest history:")
     st.dataframe(sheets_db.read_df("backtest_history"), use_container_width=True)
 
 elif section == "Manage Portfolios":
     st.subheader("Manage Portfolios")
-    st.caption("Add new portfolios or delete existing ones.")
+    st.caption("Add new portfolios or delete existing ones. Deleted portfolios cannot be recovered.")
     with st.form("add_portfolio_form"):
         new_label = st.text_input("New Portfolio Name")
         submitted = st.form_submit_button("Add Portfolio")
         if submitted and new_label:
             sheets_db.add_portfolio(new_label)
-            st.success(f"Added portfolio: {new_label}"); st.rerun()
+            st.success(f"Added portfolio: {new_label}")
+            st.rerun()
     st.divider()
     st.write("**Existing Portfolios:**")
     for tab, label in PORTFOLIOS.items():
@@ -342,10 +402,12 @@ elif section == "Manage Portfolios":
         col1.write(f"{label} (`{tab}`)")
         if col2.button("Delete", key=f"del_{tab}"):
             sheets_db.delete_portfolio(tab, label)
-            st.warning(f"Deleted {label}"); st.rerun()
+            st.warning(f"Deleted {label}")
+            st.rerun()
 
 elif section == "Reorder Items":
     st.subheader("Reorder Portfolios & ETFs")
+    st.caption("Set the display order for the main dashboard dropdown and comparison table.")
     all_items = list(PORTFOLIOS.values())
     watchlist = sheets_db.read_df("watchlist_etfs")
     if not watchlist.empty:
@@ -362,20 +424,37 @@ elif section == "Reorder Items":
         if st.button("Save Order"):
             sorted_df = edited.sort_values("Sort Order")
             sheets_db.save_display_order(sorted_df["Item"].tolist())
-            st.success("Display order saved!"); st.rerun()
+            st.success("Display order saved!")
+            st.rerun()
 
 elif section == "Export Chart to Excel":
     st.subheader("📊 Export chart to Excel")
+    st.caption(
+        "Pick a portfolio or ETF and a period. The Excel file will contain "
+        "the underlying data series on one sheet and a native Excel line chart "
+        "on another sheet."
+    )
+
     try:
         series_options = build_series_options_export()
     except Exception as e:
-        st.error(f"Failed to load series: {e}"); series_options = {}
+        st.error(f"Failed to load series: {e}")
+        series_options = {}
+
     if not series_options:
-        st.info("No portfolios or watchlist ETFs set up yet.")
+        st.info("No portfolios or watchlist ETFs set up yet. Add some first.")
     else:
         col1, col2 = st.columns([3, 2])
-        with col1: choice = st.selectbox("Choose what to chart:", list(series_options.keys()), key="export_choice")
-        with col2: period = st.selectbox("Period", options=["5D", "1M", "3M", "6M", "YTD", "1Y", "2Y", "3Y", "5Y", "Max"], index=9, key="export_period")
+        with col1:
+            choice = st.selectbox("Choose what to chart:", list(series_options.keys()), key="export_choice")
+        with col2:
+            period = st.selectbox(
+                "Period",
+                options=["5D", "1M", "3M", "6M", "YTD", "1Y", "2Y", "3Y", "5Y", "Max"],
+                index=9,
+                key="export_period",
+            )
+
         chart_series = series_options.get(choice)
         if chart_series is None or chart_series.dropna().empty:
             st.warning("No data available for this selection.")
@@ -384,156 +463,12 @@ elif section == "Export Chart to Excel":
                 excel_bytes = build_excel_bytes(choice, chart_series, period)
                 safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in choice)
                 file_name = f"{safe_name}_{period}.xlsx"
-                st.download_button(label="⬇️ Download Excel file", data=excel_bytes, file_name=file_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                st.success("Excel file is ready.")
+                st.download_button(
+                    label="⬇️ Download Excel file",
+                    data=excel_bytes,
+                    file_name=file_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+                st.success("Excel file is ready — click the button above to download.")
             except Exception as e:
                 st.error(f"Could not build Excel: {e}")
-
-elif section == "AI Market Analyst":
-    st.subheader("🤖 AI Market Analyst")
-    st.caption("Анализ генерируется без API-ключей и сохраняется в Google Sheets на весь день.")
-    
-    # Load saved prompt
-    settings_df = sheets_db.read_df("llm_settings")
-    saved_prompt = ""
-    saved_output = ""
-    last_updated = None
-    
-    if not settings_df.empty:
-        prompt_row = settings_df[settings_df["setting_name"] == "prompt"]
-        output_row = settings_df[settings_df["setting_name"] == "output"]
-        if not prompt_row.empty:
-            saved_prompt = str(prompt_row.iloc[0]["value"])
-        if not output_row.empty:
-            saved_output = str(output_row.iloc[0]["value"])
-            try:
-                last_updated = pd.to_datetime(output_row.iloc[0]["last_updated"], errors="coerce")
-            except:
-                pass
-
-    default_prompt = "Составь короткий обзор рынка акций Китая (A-shares). Выдели ключевые новости и события. Используй китайские источники. Пиши как профессиональный аналитик по акциям, только по делу. Пиши на русском, названия на английском, без китайских знаков."
-    
-    new_prompt = st.text_area("Enter your prompt:", value=saved_prompt if saved_prompt else default_prompt, height=150)
-    
-    if st.button("Save Prompt"):
-        clean_settings = settings_df[settings_df["setting_name"] != "prompt"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
-        clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "prompt", "value": new_prompt, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d")}])], ignore_index=True)
-        sheets_db.write_df("llm_settings", clean_settings)
-        sheets_db.clear_caches()
-        st.success("Prompt saved!")
-        st.rerun()
-
-    st.divider()
-
-    # LLM Generation Logic (Caches for the day)
-    needs_generation = True
-    if saved_output and last_updated:
-        if last_updated.date() == datetime.date.today():
-            needs_generation = False
-
-        if needs_generation:
-            if st.button("Generate Fresh Analysis"):
-                with st.spinner("Поиск новостей и генерация анализа..."):
-                    try:
-                        import xml.etree.ElementTree as ET
-                        import json
-                        from urllib.parse import quote
-                        
-                        # 1. Fetch live news (Берем 7 новостей для большего контекста)
-                        news_context = ""
-                        try:
-                            rss_url = "https://news.google.com/rss/search?q=China+stock+market+OR+A股&hl=en-US&gl=US&ceid=US:en"
-                            r_news = requests.get(rss_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-                            root = ET.fromstring(r_news.content)
-                            items = root.findall('.//item')[:7]
-                            for item in items:
-                                title = item.find('title').text if item.find('title') is not None else ""
-                                news_context += f"- {title}\n"
-                        except:
-                            news_context = "Could not fetch live news."
-
-                        # 2. Жесткий промпт с текущей датой
-                        today_str = datetime.datetime.now().strftime("%d %B %Y")
-                        full_prompt = f"""Ты профессиональный финансовый аналитик по китайскому фондовому рынку (A-shares и Гонконг). 
-Сегодня {today_str}. 
-Твоя задача — написать краткий, емкий и профессиональный обзор рынка за сегодняшний день.
-
-СТРОГИЕ ПРАВИЛА:
-1. Пиши ТОЛЬКО на русском языке. Названия компаний и индексов пиши на английском.
-2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ китайские иероглифы.
-3. Формат: только сплошной текст (3-4 абзаца). ЗАПРЕЩЕНО использовать таблицы, списки или буллиты.
-4. Базируй свой анализ СТРОГО на заголовках новостей, предоставленных ниже. 
-5. НЕ ВЫДУМЫВАЙ события, даты из будущего (например, 2026 год) или несуществующие источники.
-
---- СВЕЖИЕ НОВОСТИ ЗА СЕГОДНЯ ---
-{news_context}
---- КОНЕЦ НОВОСТЕЙ ---
-
-Напиши свой профессиональный анализ прямо сейчас, соблюдая все правила."""
-                        
-                        llm_output = ""
-                        
-                        # 3. Try DuckDuckGo AI
-                        try:
-                            headers = {
-                                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                                "x-vqd-accept": "1",
-                                "Accept": "*/*",
-                                "Referer": "https://duckduckgo.com/"
-                            }
-                            status_resp = requests.get("https://duckduckgo.com/duckchat/v1/status", headers=headers, timeout=10)
-                            token = status_resp.headers.get("x-vqd-4")
-                            
-                            if token and status_resp.status_code == 200:
-                                chat_url = "https://duckduckgo.com/duckchat/v1/chat"
-                                payload = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": full_prompt}]}
-                                chat_resp = requests.post(chat_url, headers={**headers, "x-vqd-4": token}, json=payload, timeout=60)
-                                
-                                if chat_resp.status_code == 200:
-                                    for line in chat_resp.text.split("\n"):
-                                        if line.startswith("data: "):
-                                            try:
-                                                data = json.loads(line[6:])
-                                                if "message" in data: llm_output += data["message"]
-                                            except: pass
-                        except:
-                            pass
-                        
-                        # 4. Fallback на Pollinations (Новый API)
-                        if not llm_output or len(llm_output) < 50:
-                            try:
-                                url = "https://api.pollinations.ai/v1/chat/completions"
-                                payload = {"model": "openai", "messages": [{"role": "user", "content": full_prompt}]}
-                                resp = requests.post(url, json=payload, timeout=60)
-                                if resp.status_code == 200:
-                                    llm_output = resp.json()["choices"][0]["message"]["content"]
-                            except:
-                                pass
-
-                        # 5. Последний резерв: Pollinations GET
-                        if not llm_output or len(llm_output) < 50:
-                            try:
-                                encoded_prompt = quote(full_prompt[:1800])
-                                url = f"https://text.pollinations.ai/{encoded_prompt}?model=openai"
-                                resp = requests.get(url, timeout=60)
-                                if resp.status_code == 200 and len(resp.text) > 50:
-                                    llm_output = resp.text
-                            except:
-                                pass
-                                
-                        # 6. Сохраняем в Google Sheets
-                        if llm_output and len(llm_output) > 50:
-                            clean_settings = settings_df[settings_df["setting_name"] != "output"] if not settings_df.empty else pd.DataFrame(columns=["setting_name", "value", "last_updated"])
-                            clean_settings = pd.concat([clean_settings, pd.DataFrame([{"setting_name": "output", "value": llm_output, "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
-                            sheets_db.write_df("llm_settings", clean_settings)
-                            sheets_db.clear_caches()
-                            st.success("Анализ сгенерирован и сохранен!")
-                            st.rerun()
-                        else:
-                            st.error("Все бесплатные провайдеры сейчас недоступны. Попробуйте обновить позже.")
-                            
-                    except Exception as e:
-                        st.error(f"An error occurred: {e}")
-        else:
-            st.markdown("**Сегодняшний анализ рынка:**")
-            st.container(border=True).markdown(saved_output)
