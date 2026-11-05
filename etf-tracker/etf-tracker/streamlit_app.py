@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import pytz
 from datetime import date, datetime, timedelta
 
-from utils import sheets_db, data_fetch, returns
+from utils import sheets_db, data_fetch, returns, index_valuation
 
 # ----- Page config with collapsed sidebar -----
 st.set_page_config(
@@ -82,8 +82,11 @@ st.markdown(
 st.title("📈 China Portfolio & ETF Tracker")
 st.caption(
     "All performance figures are **total return** (price change + dividends "
-    "reinvested), not just price change."
+    "reinvested), not just price change. The CSI 300 benchmark line/row is "
+    "price return (excl. dividends)."
 )
+
+CSI300_LABEL = "CSI 300"
 
 PORTFOLIO_LABELS = sheets_db.get_portfolios()
 
@@ -184,6 +187,9 @@ with st.spinner("Loading your data..."):
     sorted_keys = sorted(series_options.keys(), key=lambda x: order_map.get(x, 9999))
     series_options = {k: series_options[k] for k in sorted_keys}
 
+    # CSI 300 price history (own Google-Sheets cache tab, append-only)
+    csi300_series = data_fetch.get_index_price_history("000300")
+
 if not series_options:
     st.info("No portfolios or watchlist ETFs set up yet. Go to the **Manage** page to add them.")
     st.stop()
@@ -204,13 +210,20 @@ def render_dashboard(series_options: dict):
 
     st.subheader("Performance chart")
     
-    col1, col2 = st.columns([3, 2])
+    col1, col2, col3 = st.columns([3, 2, 1.6])
     with col1:
-        choice = st.selectbox("Choose what to chart:", list(series_options.keys()))
+        chart_choices = list(series_options.keys()) + [CSI300_LABEL]
+        choice = st.selectbox("Choose what to chart:", chart_choices)
     with col2:
         period = st.radio("Period", options=["5D", "1M", "3M", "6M", "YTD", "1Y", "2Y", "3Y", "5Y", "Max"], index=9, horizontal=True, key="period_selector")
+    with col3:
+        st.write("")
+        overlay_csi300 = st.checkbox("Overlay CSI 300", value=False, help="Add the CSI 300 price-return index, rebased to 0 at the start of the selected period.")
 
-    chart_series = series_options.get(choice)
+    if choice == CSI300_LABEL:
+        chart_series = csi300_series
+    else:
+        chart_series = series_options.get(choice)
     if chart_series is None or chart_series.dropna().empty:
         st.warning("No price data available yet for this selection.")
     else:
@@ -245,7 +258,24 @@ def render_dashboard(series_options: dict):
             rebased_series = (view_series / view_series.iloc[0] - 1) * 100
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=rebased_series.index, y=rebased_series.values, mode="lines", name=choice, line=dict(width=2)))
-            fig.update_layout(yaxis_title="Total return (%)", margin=dict(l=10, r=10, t=30, b=10), height=450, dragmode=False, hovermode="x")
+
+            # --- CSI 300 overlay (rebased from 0 over the same window) ---
+            show_overlay = overlay_csi300 and choice != CSI300_LABEL
+            if show_overlay:
+                csi_view = csi300_series[csi300_series.index >= start_date].dropna()
+                if len(csi_view) >= 2:
+                    csi_rebased = (csi_view / csi_view.iloc[0] - 1) * 100
+                    fig.add_trace(go.Scatter(
+                        x=csi_rebased.index, y=csi_rebased.values,
+                        mode="lines", name=CSI300_LABEL,
+                        line=dict(width=1.6, dash="dash", color="#e07b00"),
+                        opacity=0.9,
+                    ))
+                else:
+                    st.caption("CSI 300 overlay: not enough benchmark data for this period.")
+
+            y_title = "Price return (%)" if choice == CSI300_LABEL else "Total return (%)"
+            fig.update_layout(yaxis_title=y_title, margin=dict(l=10, r=10, t=30, b=10), height=450, dragmode=False, hovermode="x")
             fig.update_xaxes(showspikes=True, spikethickness=1, spikecolor="gray", spikemode="across")
             fig.update_yaxes(showspikes=True, spikethickness=1, spikecolor="gray", spikemode="across")
             plotly_config = {'displayModeBar': False, 'displaylogo': False, 'scrollZoom': False, 'doubleClick': 'reset'}
@@ -261,6 +291,13 @@ def render_dashboard(series_options: dict):
         row["Name"] = label
         rows.append(row)
 
+    # --- CSI 300 benchmark row, always the last row of the table ---
+    if csi300_series is not None and not csi300_series.dropna().empty:
+        csi_last_day = csi300_series.dropna().index.max()
+        csi_row = returns.comparison_row(csi300_series, csi_last_day)
+        csi_row["Name"] = CSI300_LABEL
+        rows.append(csi_row)
+
     if rows:
         # Added "Max Drawdown" column to the far right
         table_df = pd.DataFrame(rows).set_index("Name")[["1D", "1W", "1M", "3M", "6M", "YTD", "1Y", "2Y", "Max Drawdown"]]
@@ -273,5 +310,30 @@ def render_dashboard(series_options: dict):
         st.table(styled)
     else:
         st.info("Not enough data yet to build the comparison table.")
+
+    # ------------------------------------------------------- index valuation
+    st.subheader("Index valuation — P/E (TTM)")
+    try:
+        with st.spinner("Fetching index valuations (once per day after market close)…"):
+            pe_df = index_valuation.get_pe_table()
+        if not pe_df.empty:
+            display_df = pe_df.set_index("label")[["pe"]].copy()
+            display_df.columns = ["P/E (TTM)"]
+            display_df.index.name = None
+            styled_pe = display_df.style.format("{:.2f}", na_rep="—")
+            st.table(styled_pe)
+            st.caption(
+                "Trailing P/E (последние 4 квартала). CSI-индексы — официальный API "
+                "csindex.com.cn; CNI-индексы — официальный PE(滚动) с cnindex.com.cn; "
+                "«Техсектор Гонконга» — Danjuan/雪球. Для дивидендных и биотех-строк "
+                "Гонконга бесплатного официального P/E не существует — они считаются из "
+                "полных портфелей ETF 159545/159892 один раз в день после закрытия рынка "
+                "(котировки Tencent, убыточные компании включены). Днём показываются "
+                "значения на закрытие предыдущей сессии; архив — в листе pe_cache."
+            )
+        else:
+            st.info("Index valuation data is not available right now.")
+    except Exception:
+        st.info("Index valuation data is not available right now.")
 
 render_dashboard(series_options)
