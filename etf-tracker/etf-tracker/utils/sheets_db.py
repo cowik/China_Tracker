@@ -26,9 +26,11 @@ SHEET_SCHEMAS = {
     "display_order": ["label", "sort_order"],
     "price_cache": ["ticker", "asset_type", "date", "close"],
     # --- tabs added for the CSI 300 benchmark & index valuation features ---
-    # NOTE: both tabs below are append-only. Never call write_df() on them.
+    # NOTE: the tabs below are append-only. Never call write_df() on them.
     "index_price_cache": ["ticker", "date", "close"],
     "pe_cache": ["date", "index_key", "pe"],
+    # --- tab for the top-10 constituents feature (monthly snapshots) ---
+    "holdings_cache": ["index_key", "date", "code", "en_name", "weight"],
 }
 
 TICKER_COLUMNS = {"ticker"}
