@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import pytz
 from datetime import date, datetime, timedelta
 
-from utils import sheets_db, data_fetch, returns, index_valuation
+from utils import sheets_db, data_fetch, returns, index_valuation, index_holdings
 
 # ----- Page config with collapsed sidebar -----
 st.set_page_config(
@@ -323,17 +323,40 @@ def render_dashboard(series_options: dict):
             styled_pe = display_df.style.format("{:.2f}", na_rep="—")
             st.table(styled_pe)
             st.caption(
-                "Trailing P/E (последние 4 квартала). CSI-индексы — официальный API "
-                "csindex.com.cn; CNI-индексы — официальный PE(滚动) с cnindex.com.cn; "
-                "«Техсектор Гонконга» — Danjuan/雪球. Для дивидендных и биотех-строк "
-                "Гонконга бесплатного официального P/E не существует — они считаются из "
-                "полных портфелей ETF 159545/159892 один раз в день после закрытия рынка "
-                "(котировки Tencent, убыточные компании включены). Днём показываются "
-                "значения на закрытие предыдущей сессии; архив — в листе pe_cache."
+                "Это TTM P/E индекса на основе данных из публичных китайских "
+                "финансовых агрегаторов."
             )
         else:
             st.info("Index valuation data is not available right now.")
     except Exception:
         st.info("Index valuation data is not available right now.")
+
+    # --------------------------------------------- top-10 constituents
+    st.subheader("Состав индексов — топ-10 компаний")
+    holdings_labels = index_holdings.get_index_labels()
+    sel_label = st.selectbox("Индекс:", holdings_labels, key="holdings_index")
+    sel_key = index_holdings.get_key_for_label(sel_label)
+    try:
+        with st.spinner("Загружаю состав индекса…"):
+            holdings = index_holdings.get_top10(sel_key)
+    except Exception:
+        holdings = None
+    if holdings is None or holdings["df"].empty:
+        st.info("Состав этого индекса сейчас недоступен — попробуйте позже.")
+    else:
+        hdf = holdings["df"]
+        max_w = float(hdf["Вес, %"].max()) if not hdf["Вес, %"].dropna().empty else 1.0
+        st.dataframe(
+            hdf,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Вес, %": st.column_config.ProgressColumn(
+                    "Вес, %", min_value=0.0,
+                    max_value=max(max_w * 1.15, 0.5), format="%.2f%%",
+                ),
+            },
+        )
+        st.caption(holdings["caption"])
 
 render_dashboard(series_options)
