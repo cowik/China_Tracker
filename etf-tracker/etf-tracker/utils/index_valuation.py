@@ -27,21 +27,33 @@ their tracker ETFs (159545 / 159892, Eastmoney F10 semi-annual reports),
 using Tencent gtimg per-stock P/E TTM. Loss-makers are included (they reduce
 the aggregate earnings) - the same convention Wind/Danjuan use. ~1-2 s.
 
-5-YEAR MEDIAN, two mechanisms:
-(a) CSI rows - the median of the OFFICIAL daily P/E history from csindex
-    (one request per index).
-(b) every other row (CNI, Hang Seng, composite) - no free official P/E
-    history exists anywhere (verified 2026-11-24: cnindex publishes only the
-    current PE(滚动) and OHLCV-only daily files; HSI factsheets carry only the
-    current "Index Fundamentals" P/E and are overwritten monthly; Danjuan's
-    full history needs a phone-number login). For those rows the median is
-    computed from the row's OWN daily snapshots accumulated in `pe_cache`
-    (they have been written every trading day since 2026-11-06). It is shown
-    with a "*" marker, is recomputed automatically on every snapshot and
-    converges to a true 5-year median as the history grows.
-For Hang Seng TECH the table additionally shows Danjuan's published
-pe_percentile - the share of the index's whole history that lies ABOVE the
-current P/E - which is available for free without login and updates daily.
+5-YEAR MEDIAN, two mechanisms (in this priority order):
+(a) Wind overrides - median P/E values that the user pastes BY HAND into the
+    `wind_medians` tab of the Google Sheet (key | median_pe | note). `key` is
+    either a row key of INDEX_PE_CONFIG ('semi', 'new_energy', 'hk_tech', ...)
+    or an index / ETF code ('399266', '980017', '159545', '000300'). Works for
+    every row and overrides anything else.
+(b) CSI rows (and the CSI parts of the composite) - the median of the OFFICIAL
+    daily P/E history from csindex (one request per index). The two composite
+    CSI parts are young indices - 931994 exists since 2022-09, 931897 since
+    2022-04 - so their median is computed over the window that exists.
+For everything else (CNI, Hang Seng, the 399266 part of the composite) no
+free official P/E history exists anywhere (verified 2026-11-24: cnindex
+publishes only the current PE(滚动) and OHLCV-only daily files; HSI
+factsheets carry only the current "Index Fundamentals" P/E and are
+overwritten monthly; Danjuan's full history needs a phone-number login) -
+those rows show "-" in the median column until a Wind override is pasted.
+The composite row blends its parts' medians with the same portfolio formula
+as its P/E (1 / sum(w_i / median_i)); if any part's median is unknown, it
+shows "-" as well.
+Daily P/E snapshots keep accumulating in `pe_cache` exactly as before
+(append-only). They are no longer turned into a displayed "median" - a
+2-week "median" was misleading (it sat below the current P/E whenever the
+sector rallied within the observation window) - but they keep building a
+genuine history.
+Danjuan's published pe_percentile (share of the index's whole history that
+lies ABOVE the current P/E) is still fetched for Hang Seng TECH and kept in
+the dataframe for reference; the UI does not render it anymore.
 
 A snapshot of every value is appended (append-only, dedup by day) to the
 `pe_cache` tab of the Google Sheet for the last completed trading day.
@@ -115,19 +127,18 @@ NEW_ENERGY_PARTS = [
 
 # --------------------------------------------------------------------------- #
 # 5-year median P/E.
-# - CSI rows: median of the official csindex daily history (one request).
-# - All other rows (CNI / Hang Seng / composite): median of the row's OWN
-#   daily snapshots accumulated in `pe_cache` since 2026-11-06 (no free
-#   official P/E history exists - see the module docstring). Recomputed on
-#   every snapshot; shown with a "*" marker in the UI while it is still a
-#   "since the observations started" median rather than a full 5-year one.
+# - Wind overrides (the `wind_medians` tab, filled by hand) work for every
+#   row and take priority.
+# - CSI rows (and the CSI parts of the composite): median of the official
+#   csindex daily history (one request).
+# - Everything else: no free official P/E history exists (see the module
+#   docstring) -> "—" until a Wind override is pasted.
 # Median values are also snapshotted into `pe_cache` under "<key>__median5y".
 # --------------------------------------------------------------------------- #
 MEDIAN_YEARS = 5
 MEDIAN_SUFFIX = "__median5y"
 MEDIAN_MIN_OBS = 250   # official history: < 1 year of daily values -> not enough
-ACCUM_MIN_OBS = 5      # own snapshots: fewer than 5 -> still show "—"
-ACCUM_SINCE = "2026-11-06"  # first day of the app's pe_cache archive
+WIND_MEDIAN_TAB = "wind_medians"  # manually filled from the Wind terminal
 
 
 # --------------------------------------------------------------------------- #
@@ -268,6 +279,37 @@ def _csindex_pe_history_median(code: str) -> Optional[float]:
     end = datetime.now(BEIJING_TZ).strftime("%Y%m%d")
     start = (datetime.now(BEIJING_TZ) - timedelta(days=365 * MEDIAN_YEARS)).strftime("%Y%m%d")
     return _csindex_pe_history_median_cached(code, start, end)
+
+
+# --------------------------------------------------------------------------- #
+# Manual Wind overrides: 5-year medians pasted by hand into the
+# `wind_medians` tab of the Google Sheet (created with headers on first use;
+# the user fills the rows from the Wind terminal).
+# --------------------------------------------------------------------------- #
+@st.cache_data(ttl=1800, show_spinner=False)
+def _wind_median_overrides() -> dict[str, float]:
+    """{key_or_code: median_pe} from the `wind_medians` tab. The `key` column
+    accepts a row key of INDEX_PE_CONFIG ('semi', 'new_energy', ...) or an
+    index / ETF code ('399266', '980017', '159545', '000300'). Russian decimal
+    commas are accepted. Returns {} when the tab is empty or unreadable - the
+    app then behaves exactly as without it."""
+    out: dict[str, float] = {}
+    try:
+        df = sheets_db.read_df(WIND_MEDIAN_TAB)
+    except Exception:
+        return out
+    if df is None or df.empty or "key" not in df.columns:
+        return out
+    for _, row in df.iterrows():
+        try:
+            key = str(row.get("key", "")).strip()
+            raw = str(row.get("median_pe", "")).strip().replace(",", ".")
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if key and val > 0:
+            out[key] = val
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -436,6 +478,29 @@ def _composite_new_energy_pe() -> Optional[float]:
     return 1.0 / inv_sum
 
 
+def _composite_new_energy_median(weights: list[float],
+                                  wind: dict[str, float]) -> Optional[float]:
+    """5-year median of the composite: the same portfolio formula applied to
+    the underlying indices' medians - 1 / sum(w_i / median_i). Each part's
+    median comes from the Wind override (part code or part ETF code) or, for
+    CSI parts, from the official csindex history. If any part's median is
+    unknown, returns None (the row shows "-", like every other row without
+    a median)."""
+    inv_sum = 0.0
+    for part, w in zip(NEW_ENERGY_PARTS, weights):
+        med = wind.get(part["code"])
+        if med is None:
+            med = wind.get(part["etf"])
+        if med is None and part["source"] == "csindex":
+            med = _csindex_pe_history_median(part["code"])
+        if not med or med <= 0:
+            return None
+        inv_sum += w / med
+    if inv_sum <= 0:
+        return None
+    return 1.0 / inv_sum
+
+
 # --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
@@ -501,33 +566,6 @@ def _read_cached_snapshot_from(cache_df: pd.DataFrame, target_date: str) -> dict
         return {}
 
 
-def _accumulated_median_from(cache_df: pd.DataFrame, key: str) -> Optional[float]:
-    """Median of the row's own daily P/E snapshots accumulated in pe_cache
-    (every trading day since 2026-11-06; median rows are stored under
-    '<key>__median5y' and are excluded by the exact key match). None while
-    fewer than ACCUM_MIN_OBS snapshots exist - the row then shows "—"."""
-    try:
-        if cache_df.empty or "index_key" not in cache_df.columns:
-            return None
-        s = cache_df[cache_df["index_key"].astype(str).str.strip() == key]
-        vals: list[float] = []
-        for v in s["pe"]:
-            try:
-                f = float(v)
-                if f > 0:
-                    vals.append(f)
-            except (TypeError, ValueError):
-                continue
-        vals.sort()
-        if len(vals) < ACCUM_MIN_OBS:
-            return None
-        n = len(vals)
-        mid = n // 2
-        return vals[mid] if n % 2 else 0.5 * (vals[mid - 1] + vals[mid])
-    except Exception:
-        return None
-
-
 def _append_snapshot(target_date: str, values: dict, medians: dict) -> None:
     """Append today's values (and medians) to the `pe_cache` tab
     (append-only, dedup by day). Re-reads the tab once because the in-memory
@@ -561,14 +599,17 @@ def _append_snapshot(target_date: str, values: dict, medians: dict) -> None:
 def get_pe_table() -> pd.DataFrame:
     """
     Returns a DataFrame with columns
-    [index_key, label, pe, pe_median, median_acc, pe_percentile] for the
-    configured indices/strategies.
-    - pe_median: 5-year median. For CSI rows - the official csindex history;
-      for every other row (CNI / Hang Seng / composite) - the median of the
-      row's own daily snapshots accumulated in pe_cache since 2026-11-06
-      (median_acc=True marks those rows in the UI with a "*").
+    [index_key, label, pe, pe_median, pe_percentile] for the configured
+    indices/strategies.
+    - pe_median: 5-year median. A Wind override from the `wind_medians` tab
+      (row key, index code or ETF code) beats everything; otherwise CSI rows
+      take the official csindex history; otherwise None (shown as "-"). The
+      composite row blends its parts' medians with the same portfolio
+      formula as its P/E (1 / sum(w_i / median_i)) and shows "-" while any
+      part's median is unknown.
     - pe_percentile: Danjuan's published historical percentile (share of the
-      whole history below the current P/E), currently for Hang Seng TECH.
+      whole history below the current P/E), currently for Hang Seng TECH
+      (kept for reference; the UI does not render it).
 
     Serves the snapshot stored in `pe_cache` for the last completed trading
     day whenever it exists; only the missing rows are fetched live. A fresh
@@ -592,17 +633,29 @@ def get_pe_table() -> pd.DataFrame:
             values[cfg["key"]] = _fetch_one(cfg)
 
     # ---------------- medians ----------------
+    wind = _wind_median_overrides()
     medians: dict[str, Optional[float]] = {}
-    acc_flags: dict[str, bool] = {}
+    ne_weights: Optional[list[float]] = None
     for cfg in INDEX_PE_CONFIG:
         key = cfg["key"]
-        if cfg.get("source") == "csindex":
+        if key in wind:
+            medians[key] = wind[key]  # whole-row Wind override
+            continue
+        code = str(cfg.get("code") or "")
+        etf = str(cfg.get("etf") or cfg.get("etf_fallback") or "")
+        if code and code in wind:
+            medians[key] = wind[code]
+        elif etf and etf in wind:
+            medians[key] = wind[etf]
+        elif cfg.get("source") == "csindex":
             medians[key] = _csindex_pe_history_median(cfg["code"])
-            acc_flags[key] = False
+        elif cfg.get("source") == "composite":
+            if ne_weights is None:
+                ne_weights = _new_energy_weights() or [1.0 / 3.0] * len(NEW_ENERGY_PARTS)
+            medians[key] = _composite_new_energy_median(ne_weights, wind)
         else:
-            # no free official history exists -> own accumulated snapshots
-            medians[key] = _accumulated_median_from(cache_df, key)
-            acc_flags[key] = medians[key] is not None
+            # CNI / Hang Seng rows: no free official history exists -> "—"
+            medians[key] = None
 
     # Danjuan historical percentile for the rows that have one (Hang Seng TECH)
     percentiles: dict[str, Optional[float]] = {}
@@ -616,8 +669,7 @@ def get_pe_table() -> pd.DataFrame:
     rows = [{"index_key": cfg["key"], "label": cfg["label"],
              "pe": values.get(cfg["key"]),
              "pe_median": medians.get(cfg["key"]),
-             "median_acc": acc_flags.get(cfg["key"], False),
              "pe_percentile": percentiles.get(cfg["key"])}
             for cfg in INDEX_PE_CONFIG]
     return pd.DataFrame(rows, columns=["index_key", "label", "pe", "pe_median",
-                                       "median_acc", "pe_percentile"])
+                                       "pe_percentile"])
