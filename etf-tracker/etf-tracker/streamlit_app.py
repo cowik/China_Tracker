@@ -334,44 +334,25 @@ def render_dashboard(series_options: dict):
         with st.spinner("Fetching index valuations (once per day after market close)…"):
             pe_df = index_valuation.get_pe_table()
         if not pe_df.empty:
-            # median column as text: "45.12" for the official csindex history,
-            # "45.12*" for the accumulating own-snapshots median, "—" otherwise
+            # median column as text: "45.12" or "—". Wind overrides show up
+            # exactly like the official csindex medians - no markers.
             med_col: list[str] = []
             for _, r in pe_df.iterrows():
                 med = r.get("pe_median")
                 if med is None or pd.isna(med):
                     med_col.append("—")
                 else:
-                    med_col.append(f"{float(med):.2f}" + ("*" if bool(r.get("median_acc")) else ""))
+                    med_col.append(f"{float(med):.2f}")
             display_df = pe_df.set_index("label")[["pe"]].copy()
             display_df.columns = ["P/E (TTM)"]
             display_df["Медиана P/E, 5 лет"] = med_col
             display_df.index.name = None
             styled_pe = display_df.style.format({"P/E (TTM)": "{:.2f}"}, na_rep="—")
             st.table(styled_pe)
-
-            caption = (
+            st.caption(
                 "Это TTM P/E индекса на основе данных из публичных китайских "
-                "финансовых агрегаторов. Медиана P/E за 5 лет: для CSI-индексов "
-                "— по официальной истории csindex.com.cn. Для CNI, гонконгских "
-                "строк и композитной стратегии официальной бесплатной истории "
-                "P/E не существует (проверено 24.11.2026: cnindex и HSI "
-                "публикуют только текущий P/E) — медиана со звёздочкой (*) "
-                "считается по собственным ежедневным срезам в Google Sheets "
-                "(накапливаются с 06.11.2026 и пересчитываются автоматически, "
-                "со временем станут полноценной 5-летней медианой). Стратегия "
-                "«Новая энергетика Китая» — средневзвешенный P/E по трём ETF "
-                "(веса — из одноимённого портфеля в Google Sheets, иначе равные)."
+                "финансовых агрегаторов."
             )
-            # Danjuan's published whole-history percentile (Hang Seng TECH)
-            pct_rows = pe_df[pe_df["pe_percentile"].notna()] if "pe_percentile" in pe_df else pd.DataFrame()
-            if not pct_rows.empty:
-                p = float(pct_rows.iloc[0]["pe_percentile"])
-                caption += (f" {pct_rows.iloc[0]['label']}: текущий P/E ниже, "
-                            f"чем в {100 * (1 - p):.0f}% всех дневных значений за "
-                            f"историю индекса (перцентиль Danjuan, обновляется "
-                            f"ежедневно).")
-            st.caption(caption)
         else:
             st.info("Index valuation data is not available right now.")
     except Exception:
