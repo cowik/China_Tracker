@@ -1,17 +1,24 @@
 """
-Index valuation: P/E (TTM) for the 10 benchmark indices shown at the bottom
-of the dashboard.
+Index valuation: P/E (TTM) + 5-year median for the benchmark indices and
+strategies shown at the bottom of the dashboard.
 
-8 of the 10 rows come STRAIGHT from official sources with live queries
-(no own calculations, a handful of fast HTTP requests, ~2-3 s total):
-- CSI indices (000300, 931071, H30015, 000852): official csindex.com.cn API.
-  The `peg` field of /csindex-home/perf/index-perf is the rolling P/E (TTM),
-  published daily after the close.
-- CNI indices (980017, 980022, 980018): official cnindex.com.cn API
-  (POST /index/search). The `peDynamic` field is exactly the number that
+Most rows come STRAIGHT from official sources with live queries
+(no own calculations, a handful of fast HTTP requests, ~3-5 s total):
+- CSI indices (000300, 931071, H30015, 000852, 930939, 931052): official
+  csindex.com.cn API. The `peg` field of /csindex-home/perf/index-perf is the
+  rolling P/E (TTM), published daily after the close. The same endpoint also
+  serves the full daily history, which is where the 5-year median comes from.
+- CNI / SZSE indices (980017, 980022, 980018, 399266): official cnindex.com.cn
+  API (POST /index/search). The `peDynamic` field is exactly the number that
   cnindex.com.cn itself displays in its index table under "PE(滚动)"
   (rolling P/E).
 - Hang Seng TECH: Danjuan (Xueqiu) index valuation service.
+
+The composite strategy "Новая энергетика Китая" (ETFs 159326 + 159009 +
+562960) is computed as a weighted portfolio of its three underlying indices:
+P/E = 1 / sum(w_i / PE_i) (aggregate earnings yield of the blend). Weights
+are read from the user's portfolio with the same name in Google Sheets when
+it exists, otherwise the three ETFs are weighted equally.
 
 The two remaining Hang Seng indices (High Dividend Low Vol, Biotech) have no
 free official P/E feed, so they are COMPUTED - but only once per day:
@@ -19,6 +26,22 @@ P/E = sum(total market cap) / sum(TTM earnings) over the full holdings of
 their tracker ETFs (159545 / 159892, Eastmoney F10 semi-annual reports),
 using Tencent gtimg per-stock P/E TTM. Loss-makers are included (they reduce
 the aggregate earnings) - the same convention Wind/Danjuan use. ~1-2 s.
+
+5-YEAR MEDIAN, two mechanisms:
+(a) CSI rows - the median of the OFFICIAL daily P/E history from csindex
+    (one request per index).
+(b) every other row (CNI, Hang Seng, composite) - no free official P/E
+    history exists anywhere (verified 2026-11-24: cnindex publishes only the
+    current PE(滚动) and OHLCV-only daily files; HSI factsheets carry only the
+    current "Index Fundamentals" P/E and are overwritten monthly; Danjuan's
+    full history needs a phone-number login). For those rows the median is
+    computed from the row's OWN daily snapshots accumulated in `pe_cache`
+    (they have been written every trading day since 2026-11-06). It is shown
+    with a "*" marker, is recomputed automatically on every snapshot and
+    converges to a true 5-year median as the history grows.
+For Hang Seng TECH the table additionally shows Danjuan's published
+pe_percentile - the share of the index's whole history that lies ABOVE the
+current P/E - which is available for free without login and updates daily.
 
 A snapshot of every value is appended (append-only, dedup by day) to the
 `pe_cache` tab of the Google Sheet for the last completed trading day.
@@ -57,21 +80,54 @@ PE_TTM_FIELD_HK = 57  # gtimg field index for HK-stock P/E (TTM)
 MCAP_FIELD = 45       # gtimg field index for total market cap
 
 # --------------------------------------------------------------------------- #
-# Configuration: the 10 indices and where each P/E comes from
+# Configuration: the indices/strategies and where each P/E comes from
 # --------------------------------------------------------------------------- #
 INDEX_PE_CONFIG = [
-    {"key": "csi300",  "label": "Возможности Китая",                   "source": "csindex", "code": "000300"},
-    {"key": "semi",    "label": "Полупроводники",                      "source": "cnindex", "code": "980017"},
-    {"key": "ai",      "label": "ИИ",                                  "source": "csindex", "code": "931071"},
-    {"key": "robot",   "label": "Робототехника",                       "source": "cnindex", "code": "980022"},
-    {"key": "sat",     "label": "Космические технологии",              "source": "cnindex", "code": "980018"},
-    {"key": "autos",   "label": "Автопром",                            "source": "csindex", "code": "H30015"},
-    {"key": "hk_div",  "label": "Дивидендные акции Гонконга",          "source": "hk_etf",  "etf": "159545"},
-    {"key": "hk_tech", "label": "Техсектор Гонконга",                  "source": "danjuan", "code": "HKHSTECH",
+    {"key": "csi300",  "label": "Возможности Китая (CSI 300)",           "source": "csindex", "code": "000300"},
+    {"key": "semi",    "label": "Полупроводники",                        "source": "cnindex", "code": "980017"},
+    {"key": "ai",      "label": "ИИ",                                   "source": "csindex", "code": "931071"},
+    {"key": "robot",   "label": "Робототехника",                        "source": "cnindex", "code": "980022"},
+    {"key": "sat",     "label": "Космические технологии",                "source": "cnindex", "code": "980018"},
+    {"key": "autos",   "label": "Автопром",                             "source": "csindex", "code": "H30015"},
+    {"key": "hk_div",  "label": "Дивидендные акции Гонконга",           "source": "hk_etf",  "etf": "159545"},
+    {"key": "hk_tech", "label": "Техсектор Гонконга",                   "source": "danjuan", "code": "HKHSTECH",
      "etf_fallback": "513180"},
-    {"key": "hk_bio",  "label": "Биотехнологии Гонконга",              "source": "hk_etf",  "etf": "159892"},
-    {"key": "csi1000", "label": "Китайские акции малой капитализации", "source": "csindex", "code": "000852"},
+    {"key": "hk_bio",  "label": "Биотехнологии Гонконга",               "source": "hk_etf",  "etf": "159892"},
+    {"key": "csi1000", "label": "Китайские акции малой капитализации",  "source": "csindex", "code": "000852"},
+    {"key": "new_energy", "label": "Новая энергетика Китая",            "source": "composite"},
+    {"key": "stable",  "label": "Устойчивые компании Китая",            "source": "csindex", "code": "930939"},
+    {"key": "value",   "label": "Недооценённые компании Китая",         "source": "csindex", "code": "931052"},
 ]
+
+# --------------------------------------------------------------------------- #
+# Composite strategy "Новая энергетика Китая": a weighted portfolio of three
+# ETFs. P/E is aggregated like a real portfolio (sum of market caps / sum of
+# earnings):  P/E_blend = 1 / sum(w_i / PE_i).
+# Weights are read from the user's portfolio with the same label in Google
+# Sheets when it exists; otherwise the three ETFs are weighted equally.
+# --------------------------------------------------------------------------- #
+NEW_ENERGY_LABEL = "Новая энергетика Китая"
+NEW_ENERGY_PARTS = [
+    {"etf": "159326", "source": "csindex", "code": "931994"},  # CSI Grid Equipment Thematic
+    {"etf": "159009", "source": "cnindex", "code": "399266"},  # ChiNext New Energy
+    {"etf": "562960", "source": "csindex", "code": "931897"},  # CSI Green Power
+]
+
+# --------------------------------------------------------------------------- #
+# 5-year median P/E.
+# - CSI rows: median of the official csindex daily history (one request).
+# - All other rows (CNI / Hang Seng / composite): median of the row's OWN
+#   daily snapshots accumulated in `pe_cache` since 2026-11-06 (no free
+#   official P/E history exists - see the module docstring). Recomputed on
+#   every snapshot; shown with a "*" marker in the UI while it is still a
+#   "since the observations started" median rather than a full 5-year one.
+# Median values are also snapshotted into `pe_cache` under "<key>__median5y".
+# --------------------------------------------------------------------------- #
+MEDIAN_YEARS = 5
+MEDIAN_SUFFIX = "__median5y"
+MEDIAN_MIN_OBS = 250   # official history: < 1 year of daily values -> not enough
+ACCUM_MIN_OBS = 5      # own snapshots: fewer than 5 -> still show "—"
+ACCUM_SINCE = "2026-11-06"  # first day of the app's pe_cache archive
 
 
 # --------------------------------------------------------------------------- #
@@ -184,6 +240,36 @@ def _csindex_pe(code: str) -> Optional[float]:
     return None
 
 
+@st.cache_data(ttl=21600, show_spinner=False)
+def _csindex_pe_history_median_cached(code: str, start: str, end: str) -> Optional[float]:
+    """Median of the daily rolling P/E over [start, end] (the official
+    csindex history endpoint serves the whole range in one request)."""
+    r = _get("https://www.csindex.com.cn/csindex-home/perf/index-perf"
+             f"?indexCode={code}&startDate={start}&endDate={end}")
+    if r is None:
+        return None
+    try:
+        data = r.json().get("data") or []
+        pegs = [float(row["peg"]) for row in data
+                if row.get("peg") not in (None, 0, "0")]
+    except Exception:
+        return None
+    if len(pegs) < MEDIAN_MIN_OBS:
+        return None  # too little history to call it a 5-year median
+    pegs.sort()
+    n = len(pegs)
+    mid = n // 2
+    return (pegs[mid] if n % 2 else 0.5 * (pegs[mid - 1] + pegs[mid]))
+
+
+def _csindex_pe_history_median(code: str) -> Optional[float]:
+    """5-year (or shorter if the index is younger) median of the official
+    rolling P/E. Cached for 6 h - it moves only marginally day to day."""
+    end = datetime.now(BEIJING_TZ).strftime("%Y%m%d")
+    start = (datetime.now(BEIJING_TZ) - timedelta(days=365 * MEDIAN_YEARS)).strftime("%Y%m%d")
+    return _csindex_pe_history_median_cached(code, start, end)
+
+
 # --------------------------------------------------------------------------- #
 # Source 2: CNI official API (P/E TTM directly, the "PE(滚动)" of their site)
 # --------------------------------------------------------------------------- #
@@ -215,19 +301,34 @@ def _cnindex_pe(code: str) -> Optional[float]:
 # --------------------------------------------------------------------------- #
 # Source 3: Danjuan (Xueqiu's index valuation) - direct P/E for a few indices
 # --------------------------------------------------------------------------- #
-def _danjuan_pe(code: str) -> Optional[float]:
+@st.cache_data(ttl=3600, show_spinner=False)
+def _danjuan_eva_items() -> list:
+    """The whole Danjuan valuation list (63 indices, ~0.3 s, no login needed)."""
     r = _get("https://danjuanfunds.com/djapi/index_eva/dj",
              extra_headers={"Referer": "https://danjuanfunds.com/index-value"})
     if r is None:
-        return None
+        return []
     try:
-        for item in r.json().get("data", {}).get("items", []):
-            if item.get("index_code") == code:
-                pe = item.get("pe")
-                return float(pe) if pe else None
+        return r.json().get("data", {}).get("items", []) or []
     except Exception:
-        pass
-    return None
+        return []
+
+
+def _danjuan_valuation(code: str) -> dict:
+    """{'pe': float|None, 'pe_percentile': float|None} for the given index.
+    `pe_percentile` is the share of the index's whole published history that
+    lies BELOW the current P/E (0..1), i.e. 0.02 means the current P/E is
+    higher than only 2% of all historical values."""
+    for item in _danjuan_eva_items():
+        if item.get("index_code") == code:
+            pe, pct = item.get("pe"), item.get("pe_percentile")
+            return {"pe": float(pe) if pe and float(pe) > 0 else None,
+                    "pe_percentile": float(pct) if pct is not None else None}
+    return {"pe": None, "pe_percentile": None}
+
+
+def _danjuan_pe(code: str) -> Optional[float]:
+    return _danjuan_valuation(code)["pe"]
 
 
 # --------------------------------------------------------------------------- #
@@ -277,11 +378,72 @@ def _hk_etf_pe(etf: str) -> Optional[float]:
 
 
 # --------------------------------------------------------------------------- #
+# Composite strategy: weighted-portfolio P/E of the three underlying indices
+# --------------------------------------------------------------------------- #
+def _new_energy_weights() -> Optional[list[float]]:
+    """Weights of the three ETFs from the user's Google-Sheets portfolio named
+    'Новая энергетика Китая' (normalized to 1). None -> equal thirds."""
+    etf_codes = [p["etf"] for p in NEW_ENERGY_PARTS]
+    try:
+        portfolios = sheets_db.get_portfolios()
+        tab = next((t for t, lbl in portfolios.items()
+                    if str(lbl).strip().lower() == NEW_ENERGY_LABEL.lower()), None)
+        if tab is None:
+            return None
+        df = sheets_db.read_df(tab)
+        if df.empty or "ticker" not in df.columns or "weight" not in df.columns:
+            return None
+        found: dict[str, float] = {}
+        for _, row in df.iterrows():
+            t = str(row.get("ticker", "")).strip()
+            if t in etf_codes:
+                try:
+                    w = float(row["weight"])
+                except (TypeError, ValueError):
+                    continue
+                if w > 0:
+                    found[t] = w
+        if len(found) < len(etf_codes):
+            return None  # some ETF of the strategy is missing -> don't guess
+        total = sum(found.values())
+        if total <= 0:
+            return None
+        return [found[c] / total for c in etf_codes]
+    except Exception:
+        return None  # no secrets / no sheet -> fall back to equal weights
+
+
+def _composite_new_energy_pe() -> Optional[float]:
+    """P/E of the composite as a weighted portfolio: 1 / sum(w_i / PE_i).
+    If any of the three underlying P/Es is unavailable, returns None (the
+    row shows '—' and retries on the next refresh, like every other row)."""
+    weights = _new_energy_weights() or [1.0 / 3.0] * len(NEW_ENERGY_PARTS)
+    inv_sum = 0.0
+    for part, w in zip(NEW_ENERGY_PARTS, weights):
+        pe = None
+        try:
+            if part["source"] == "csindex":
+                pe = _csindex_pe(part["code"])
+            elif part["source"] == "cnindex":
+                pe = _cnindex_pe(part["code"])
+        except Exception:
+            pe = None
+        if not pe or pe <= 0:
+            return None
+        inv_sum += w / pe
+    if inv_sum <= 0:
+        return None
+    return 1.0 / inv_sum
+
+
+# --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
 def _fetch_one(cfg: dict) -> Optional[float]:
     try:
         src = cfg["source"]
+        if src == "composite":
+            return _composite_new_energy_pe()
         if src == "csindex":
             return _csindex_pe(cfg["code"])
         if src == "cnindex":
@@ -301,13 +463,31 @@ def _fetch_one(cfg: dict) -> Optional[float]:
     return None
 
 
-def _read_cached_snapshot(target_date: str) -> dict[str, float]:
+def _read_pe_cache() -> pd.DataFrame:
+    """The whole `pe_cache` tab (one Sheets read, reused everywhere below).
+    Also cached in-memory for an hour so repeat calls inside one page render
+    do not re-hit the Sheets API."""
+    try:
+        return _read_pe_cache_cached()
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _read_pe_cache_cached() -> pd.DataFrame:
+    try:
+        df = sheets_db.read_df("pe_cache")
+        return df if df is not None else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+def _read_cached_snapshot_from(cache_df: pd.DataFrame, target_date: str) -> dict[str, float]:
     """{index_key: pe} for rows already stored in pe_cache for target_date."""
     try:
-        cached = sheets_db.read_df("pe_cache")
-        if cached.empty:
+        if cache_df.empty or "date" not in cache_df.columns:
             return {}
-        cached = cached[cached["date"].astype(str).str.strip() == target_date]
+        cached = cache_df[cache_df["date"].astype(str).str.strip() == target_date]
         out = {}
         for _, r in cached.iterrows():
             try:
@@ -321,8 +501,38 @@ def _read_cached_snapshot(target_date: str) -> dict[str, float]:
         return {}
 
 
-def _append_snapshot(target_date: str, values: dict) -> None:
-    """Append today's values to the `pe_cache` tab (append-only, dedup by day)."""
+def _accumulated_median_from(cache_df: pd.DataFrame, key: str) -> Optional[float]:
+    """Median of the row's own daily P/E snapshots accumulated in pe_cache
+    (every trading day since 2026-11-06; median rows are stored under
+    '<key>__median5y' and are excluded by the exact key match). None while
+    fewer than ACCUM_MIN_OBS snapshots exist - the row then shows "—"."""
+    try:
+        if cache_df.empty or "index_key" not in cache_df.columns:
+            return None
+        s = cache_df[cache_df["index_key"].astype(str).str.strip() == key]
+        vals: list[float] = []
+        for v in s["pe"]:
+            try:
+                f = float(v)
+                if f > 0:
+                    vals.append(f)
+            except (TypeError, ValueError):
+                continue
+        vals.sort()
+        if len(vals) < ACCUM_MIN_OBS:
+            return None
+        n = len(vals)
+        mid = n // 2
+        return vals[mid] if n % 2 else 0.5 * (vals[mid - 1] + vals[mid])
+    except Exception:
+        return None
+
+
+def _append_snapshot(target_date: str, values: dict, medians: dict) -> None:
+    """Append today's values (and medians) to the `pe_cache` tab
+    (append-only, dedup by day). Re-reads the tab once because the in-memory
+    copy may be stale (a snapshot for the same day could have been appended
+    by a concurrent render)."""
     try:
         cached = sheets_db.read_df("pe_cache")
         existing: set[tuple] = set()
@@ -332,14 +542,17 @@ def _append_snapshot(target_date: str, values: dict) -> None:
         rows = []
         for cfg in INDEX_PE_CONFIG:
             pe = values.get(cfg["key"])
-            if pe is None:
-                continue
-            if (target_date, cfg["key"]) in existing:
-                continue
-            rows.append({"date": target_date, "index_key": cfg["key"],
-                         "pe": f"{float(pe):.4f}"})
+            if pe is not None and (target_date, cfg["key"]) not in existing:
+                rows.append({"date": target_date, "index_key": cfg["key"],
+                             "pe": f"{float(pe):.4f}"})
+            med = medians.get(cfg["key"])
+            med_key = cfg["key"] + MEDIAN_SUFFIX
+            if med is not None and (target_date, med_key) not in existing:
+                rows.append({"date": target_date, "index_key": med_key,
+                             "pe": f"{float(med):.4f}"})
         if rows:
             sheets_db.append_rows("pe_cache", rows)
+            _read_pe_cache_cached.clear()
     except Exception:
         pass  # history snapshot is best-effort; never break the dashboard
 
@@ -347,12 +560,20 @@ def _append_snapshot(target_date: str, values: dict) -> None:
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_pe_table() -> pd.DataFrame:
     """
-    Returns a DataFrame: columns [index_key, label, pe] for the 10 indices.
+    Returns a DataFrame with columns
+    [index_key, label, pe, pe_median, median_acc, pe_percentile] for the
+    configured indices/strategies.
+    - pe_median: 5-year median. For CSI rows - the official csindex history;
+      for every other row (CNI / Hang Seng / composite) - the median of the
+      row's own daily snapshots accumulated in pe_cache since 2026-11-06
+      (median_acc=True marks those rows in the UI with a "*").
+    - pe_percentile: Danjuan's published historical percentile (share of the
+      whole history below the current P/E), currently for Hang Seng TECH.
 
     Serves the snapshot stored in `pe_cache` for the last completed trading
     day whenever it exists; only the missing rows are fetched live. A fresh
-    snapshot is appended (append-only) after the market close, so the slow
-    part normally runs once per day.
+    snapshot (P/Es and medians) is appended (append-only) after the
+    market close, so the slow part normally runs once per day.
     """
     try:
         target = data_fetch._get_last_trading_day()
@@ -361,18 +582,42 @@ def get_pe_table() -> pd.DataFrame:
     if not target:
         target = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
 
-    values: dict[str, Optional[float]] = {}
-    if target:
-        values.update(_read_cached_snapshot(target))
+    cache_df = _read_pe_cache()  # one Sheets read, reused for everything
+    cached: dict = _read_cached_snapshot_from(cache_df, target) if target else {}
+    values: dict[str, Optional[float]] = {k: v for k, v in cached.items()
+                                          if not k.endswith(MEDIAN_SUFFIX)}
 
     for cfg in INDEX_PE_CONFIG:
-        if cfg["key"] in values:
-            continue
-        values[cfg["key"]] = _fetch_one(cfg)
+        if cfg["key"] not in values:
+            values[cfg["key"]] = _fetch_one(cfg)
+
+    # ---------------- medians ----------------
+    medians: dict[str, Optional[float]] = {}
+    acc_flags: dict[str, bool] = {}
+    for cfg in INDEX_PE_CONFIG:
+        key = cfg["key"]
+        if cfg.get("source") == "csindex":
+            medians[key] = _csindex_pe_history_median(cfg["code"])
+            acc_flags[key] = False
+        else:
+            # no free official history exists -> own accumulated snapshots
+            medians[key] = _accumulated_median_from(cache_df, key)
+            acc_flags[key] = medians[key] is not None
+
+    # Danjuan historical percentile for the rows that have one (Hang Seng TECH)
+    percentiles: dict[str, Optional[float]] = {}
+    for cfg in INDEX_PE_CONFIG:
+        if cfg.get("source") == "danjuan":
+            percentiles[cfg["key"]] = _danjuan_valuation(cfg["code"])["pe_percentile"]
 
     if _after_close():
-        _append_snapshot(target, values)
+        _append_snapshot(target, values, medians)
 
     rows = [{"index_key": cfg["key"], "label": cfg["label"],
-             "pe": values.get(cfg["key"])} for cfg in INDEX_PE_CONFIG]
-    return pd.DataFrame(rows, columns=["index_key", "label", "pe"])
+             "pe": values.get(cfg["key"]),
+             "pe_median": medians.get(cfg["key"]),
+             "median_acc": acc_flags.get(cfg["key"], False),
+             "pe_percentile": percentiles.get(cfg["key"])}
+            for cfg in INDEX_PE_CONFIG]
+    return pd.DataFrame(rows, columns=["index_key", "label", "pe", "pe_median",
+                                       "median_acc", "pe_percentile"])

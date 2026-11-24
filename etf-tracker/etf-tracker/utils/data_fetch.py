@@ -74,7 +74,7 @@ def _get_last_trading_day() -> str:
         pass
         
     dt = _now_beijing()
-    if dt.hour < 17:
+    if dt.hour < 17 or (dt.hour == 17 and dt.minute < 30):
         dt -= timedelta(days=1)
     while dt.weekday() > 4:
         dt -= timedelta(days=1)
@@ -115,10 +115,84 @@ def _retry_download_yfinance(ticker_yf: str, start: str, end: str, retries=3) ->
                 return pd.DataFrame()
     return pd.DataFrame()
 
+
+def _tencent_symbol(ticker: str) -> str:
+    t = _clean_ticker(ticker)
+    if not t:
+        return t
+    if t.startswith(("5", "6")):
+        return "sh" + t
+    if t.startswith(("4", "8", "9")):  # Beijing exchange
+        return "bj" + t
+    return "sz" + t
+
+
+def _fetch_kline_tencent(ticker: str, start: str, end: str) -> pd.DataFrame:
+    """Daily qfq ('adjusted') closes from Tencent (ifzq) - the SAME adjustment
+    convention as the primary BaoStock adjustflag='2' source (values verified
+    identical). Publishes the daily bar right after the close, hours before
+    BaoStock's evening update, which makes it a strong fallback for the
+    'today only shows Friday' problem."""
+    import requests as _requests
+    symbol = _tencent_symbol(ticker)
+    if not symbol:
+        return pd.DataFrame()
+    try:
+        r = _requests.get("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
+                          params={"param": f"{symbol},day,{start},{end},640,"},
+                          headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                               "Chrome/120.0 Safari/537.36"},
+                          timeout=20)
+        data = ((r.json() or {}).get("data") or {}).get(symbol) or {}
+        days = data.get("qfqday") or data.get("day") or []
+        rows = [{"date": d[0], "close": float(d[2])} for d in days
+                if len(d) >= 3 and start <= d[0] <= end]
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fetch_kline_eastmoney(ticker: str, start: str, end: str) -> pd.DataFrame:
+    """Daily closes from Eastmoney push2his (qfq). Plain HTTPS; last-resort
+    fallback (the same host the CSI 300 history already uses as source #3)."""
+    import requests as _requests
+    t = _clean_ticker(ticker)
+    if not t:
+        return pd.DataFrame()
+    secid = ("1." if t.startswith(("5", "6")) else "0.") + t
+    beg = start.replace("-", "")
+    end_c = end.replace("-", "")
+    url = ("https://push2his.eastmoney.com/api/qt/stock/kline/get"
+           f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6"
+           "&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=1"
+           f"&beg={beg}&end={end_c}&lmt=10000")
+    try:
+        r = _requests.get(url, timeout=20,
+                          headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                               "Chrome/120.0 Safari/537.36"})
+        klines = ((r.json() or {}).get("data") or {}).get("klines") or []
+        rows = []
+        for k in klines:
+            parts = k.split(",")
+            if len(parts) >= 3 and start <= parts[0] <= end:
+                rows.append({"date": parts[0], "close": float(parts[2])})
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
+
 def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict[str, pd.DataFrame]:
-    import baostock as bs
+    """Per-ticker source chain, resilient to individual outages:
+    stocks:  BaoStock (qfq) -> yfinance -> Tencent ifzq -> Eastmoney kline
+    ETFs:    yfinance -> Tencent ifzq -> Eastmoney kline
+
+    FIX: a failed BaoStock login no longer cancels the whole stock batch -
+    it used to raise out of the try block, skipping the yfinance fallback for
+    every stock, so an evening BaoStock outage could freeze the price cache
+    at Friday for all stock portfolios."""
     results = {}
-    
     if not requests:
         return results
         
@@ -128,30 +202,21 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
     session_ok = False
     if stock_reqs:
         try:
+            import baostock as bs
             lg = bs.login()
-            session_ok = lg is not None and lg.error_code == "0"
-            
-            for ticker, asset_type, start_date, end_date in stock_reqs:
+            session_ok = lg is not None and getattr(lg, "error_code", "1") == "0"
+        except Exception:
+            session_ok = False
+
+    try:
+        for ticker, asset_type, start_date, end_date in stock_reqs:
+            df = pd.DataFrame()
+            if session_ok:
+                import baostock as bs
                 bs_ticker = _to_baostock_ticker(ticker)
-                df = pd.DataFrame()
-                
-                try:
-                    rs = bs.query_history_k_data_plus(bs_ticker, "date,close", start_date=start_date, end_date=end_date, frequency="d", adjustflag="2")
-                    if rs.error_code == "0":
-                        data_list = []
-                        while rs.next():
-                            data_list.append(rs.get_row_data())
-                        if data_list:
-                            df = pd.DataFrame(data_list, columns=rs.fields)
-                            df["date"] = pd.to_datetime(df["date"])
-                            df["close"] = pd.to_numeric(df["close"], errors="coerce")
-                            df = df.dropna(subset=["close"])[["date", "close"]]
-                except Exception:
-                    pass
-                    
-                if df.empty:
+                for adjustflag in ("2", "3"):
                     try:
-                        rs = bs.query_history_k_data_plus(bs_ticker, "date,close", start_date=start_date, end_date=end_date, frequency="d", adjustflag="3")
+                        rs = bs.query_history_k_data_plus(bs_ticker, "date,close", start_date=start_date, end_date=end_date, frequency="d", adjustflag=adjustflag)
                         if rs.error_code == "0":
                             data_list = []
                             while rs.next():
@@ -163,22 +228,30 @@ def _fetch_missing_data_batch(requests: list[tuple[str, str, str, str]]) -> dict
                                 df = df.dropna(subset=["close"])[["date", "close"]]
                     except Exception:
                         pass
-                        
-                if df.empty:
-                    yf_ticker = _to_yfinance_ticker(ticker)
-                    df = _retry_download_yfinance(yf_ticker, start_date, end_date)
-                    
-                if not df.empty:
-                    results[ticker] = df
-        except Exception:
-            pass
-        finally:
-            if session_ok:
+                    if not df.empty:
+                        break
+            if df.empty:
+                df = _retry_download_yfinance(_to_yfinance_ticker(ticker), start_date, end_date)
+            if df.empty:
+                df = _fetch_kline_tencent(ticker, start_date, end_date)
+            if df.empty:
+                df = _fetch_kline_eastmoney(ticker, start_date, end_date)
+            if not df.empty:
+                results[ticker] = df
+    finally:
+        if session_ok:
+            try:
+                import baostock as bs
                 bs.logout()
-                
+            except Exception:
+                pass
+
     for ticker, asset_type, start_date, end_date in etf_reqs:
-        yf_ticker = _to_yfinance_ticker(ticker)
-        df = _retry_download_yfinance(yf_ticker, start_date, end_date)
+        df = _retry_download_yfinance(_to_yfinance_ticker(ticker), start_date, end_date)
+        if df.empty:
+            df = _fetch_kline_tencent(ticker, start_date, end_date)
+        if df.empty:
+            df = _fetch_kline_eastmoney(ticker, start_date, end_date)
         if not df.empty:
             results[ticker] = df
             

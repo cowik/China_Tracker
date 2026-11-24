@@ -2,15 +2,20 @@
 Top-10 index constituents (weights, English names, one-line Russian
 descriptions) for the section under the P/E table.
 
-Data sources (all free, all verified 2026-11-06):
-- CSI indices (000300, 931071, H30015, 000852): official month-end weight
-  file of csindex.com.cn (XLS; includes the official English names).
-- CNI indices (980017, 980022, 980018): official sample file of
-  cnindex.com.cn (XLSX; Chinese names + industry + weights).
+Data sources (all free, all verified):
+- CSI indices (000300, 931071, H30015, 000852, 930939, 931052, 931994,
+  931897): official month-end weight file of csindex.com.cn (XLS; includes
+  the official English names).
+- CNI / SZSE indices (980017, 980022, 980018, 399266): official sample file
+  of cnindex.com.cn (XLSX; Chinese names + industry + weights).
 - Hong Kong indices: hsi.com.hk refuses plain HTTP requests (403), so the
   top-10 of the tracker ETFs (513180 / 159545 / 159892) is used instead -
   the ACTUAL ETF portfolios from their quarterly reports (Eastmoney F10),
   the same ETFs the P/E table's HK rows are built from.
+- The composite strategy "Новая энергетика Китая" is shown as three sections
+  (one per ETF: 159326 / 159009 / 562960) with the top-3 stocks of each
+  underlying index (931994 / 399266 / 931897) - the same weight files as
+  above, cached under the ne_* keys.
 
 English names for CNI/HK stocks and Russian descriptions are curated
 dictionaries keyed by stock code (codes are stable identifiers). Companies
@@ -46,6 +51,7 @@ UA = {
 CACHE_TAB = "holdings_cache"
 REFRESH_AFTER_DAYS = 31          # refetch at most once a month
 TOP_N = 10
+COMPOSITE_TOP_N = 3              # top-3 stocks per ETF of the composite strategy
 
 # --------------------------------------------------------------------------- #
 # Where the top-10 of each index comes from (keys/labels live in
@@ -62,15 +68,42 @@ HOLDINGS_SOURCES = {
     "hk_tech": {"source": "hk_etf",  "etf": "513180"},
     "hk_bio":  {"source": "hk_etf",  "etf": "159892"},
     "csi1000": {"source": "csindex", "code": "000852"},
+    # --- composite strategy "Новая энергетика Китая" (rendered as sections) ---
+    "new_energy": {"source": "composite"},
+    # --- new standalone indices ---
+    "stable":   {"source": "csindex", "code": "930939"},  # CSI 500 Quality Growth
+    "value":    {"source": "csindex", "code": "931052"},  # CSI Guosen Value
+    # --- per-ETF sub-indices of the composite (cached/fetched like normal) ---
+    "ne_grid":    {"source": "csindex", "code": "931994"},  # 159326 Grid Equipment
+    "ne_chinext": {"source": "cnindex", "code": "399266"},  # 159009 ChiNext NE
+    "ne_green":   {"source": "csindex", "code": "931897"},  # 562960 Green Power
 }
 
-_LABEL_TO_KEY = {cfg["label"]: cfg["key"] for cfg in INDEX_PE_CONFIG}
-_KEY_TO_LABEL = {cfg["key"]: cfg["label"] for cfg in INDEX_PE_CONFIG}
+# Labels in THIS table can differ from the P/E table (the CSI 300 row is
+# named differently here per request).
+HOLDINGS_LABELS = {
+    "csi300": "CSI 300 (Возможности Китая)",
+}
+
+# The three ETFs of the composite strategy, in display order.
+NEW_ENERGY_SECTIONS = [
+    {"etf": "159326", "index_key": "ne_grid",
+     "title": "ETF 159326 — Оборудование для электросетей (CSI Grid Equipment, 931994)"},
+    {"etf": "159009", "index_key": "ne_chinext",
+     "title": "ETF 159009 — Новая энергетика ChiNext (创业板新能源， 399266)"},
+    {"etf": "562960", "index_key": "ne_green",
+     "title": "ETF 562960 — Зелёная электроэнергетика (CSI Green Power, 931897)"},
+]
+
+_LABEL_TO_KEY = {}
+for _cfg in INDEX_PE_CONFIG:
+    _LABEL_TO_KEY[HOLDINGS_LABELS.get(_cfg["key"], _cfg["label"])] = _cfg["key"]
+_KEY_TO_LABEL = {v: k for k, v in _LABEL_TO_KEY.items()}
 
 
 def get_index_labels() -> list[str]:
-    """Russian labels of the 10 indices, in the same order as the P/E table."""
-    return [cfg["label"] for cfg in INDEX_PE_CONFIG]
+    """Russian labels of the indices, in the same order as the P/E table."""
+    return [HOLDINGS_LABELS.get(cfg["key"], cfg["label"]) for cfg in INDEX_PE_CONFIG]
 
 
 def get_key_for_label(label: str) -> Optional[str]:
@@ -175,6 +208,53 @@ EN_NAMES = {
     "601127": "Seres Group",
     "601058": "Sailun Group",
     "603129": "Zhejiang CFMOTO Power",
+    # --- CSI Grid Equipment (931994), display forms ---
+    "600406": "NARI Technology",
+    "600089": "TBEA",
+    "600487": "Hengtong Optic-Electric",
+    "002028": "Siyuan Electric",
+    "600522": "Jiangsu Zhongtian Technology",
+    "601179": "China XD Electric",
+    "601877": "Chint Electrics",
+    "300001": "TGOOD Electric",
+    # --- CSI Green Power (931897) ---
+    "601985": "China National Nuclear Power",
+    "600905": "China Three Gorges Renewables",
+    "600795": "GD Power Development",
+    "600886": "SDIC Power",
+    "003816": "CGN Power",
+    "600674": "Sichuan Chuantou Energy",
+    "600011": "Huaneng Power International",
+    "600023": "Zhejiang Zheneng Electric Power",
+    "600027": "Huadian Power International",
+    # --- ChiNext New Energy (399266), no English in the CNI file ---
+    "300124": "Inovance Technology",
+    "300274": "Sungrow Power",
+    "300014": "EVE Energy",
+    "300450": "Lead Intelligent Equipment",
+    "300757": "Robotechnik",
+    "300037": "Capchem Technology",
+    "300207": "Sunwoda",
+    "300316": "Jingsheng Mechanical & Electrical",
+    # --- CSI 500 Quality Growth (930939) ---
+    "600988": "Chifeng Gold",
+    "300054": "Dinglong Technology",
+    "002281": "Accelink Technologies",
+    "002966": "Bank of Suzhou",
+    "300759": "Pharmaron",
+    "601233": "Tongkun Group",
+    "600601": "Founder Technology",
+    # --- CSI Guosen Value (931052) ---
+    "603565": "Zhonggu Logistics",
+    "603939": "Yifeng Pharmacy",
+    "603233": "DaShenLin Pharmaceutical",
+    "601900": "Southern Publishing and Media",
+    "601872": "China Merchants Energy Shipping",
+    "002768": "Guoen Technology",
+    "000739": "Apeloa Pharmaceutical",
+    "300979": "Huali Industrial Group",
+    "000902": "Xinyangfeng",
+    "601919": "COSCO Shipping Holdings",
 }
 
 
@@ -288,6 +368,55 @@ DESCRIPTIONS_RU = {
     "01177": "Одна из крупнейших фармацевтических групп Китая.",
     "03692": "Инновационная фармацевтическая компания.",
     "06990": "Разработчик ADC-препаратов для онкологии.",
+    # --- CSI Grid Equipment (931994) ---
+    "600406": "Лидер автоматизации энергосистем, «дочка» госкомпании State Grid.",
+    "600089": "Крупнейший в Китае производитель трансформаторов и силового оборудования.",
+    "600487": "Крупный производитель оптоволоконных и силовых кабелей.",
+    "002028": "Производитель высоковольтного коммутационного оборудования.",
+    "600522": "Производитель морских кабелей и оптических материалов.",
+    "601208": "Производитель изоляционных плёночных материалов для электроники.",
+    "601179": "Крупнейший производитель оборудования сверхвысокого напряжения в Китае.",
+    "601877": "Производитель низковольтной аппаратуры и солнечных панелей.",
+    "300001": "Производитель модульных подстанций и зарядной инфраструктуры для электромобилей.",
+    # --- CSI Green Power (931897) ---
+    "601985": "Крупнейший оператор атомных электростанций Китая.",
+    "600905": "Оператор ветровых и солнечных станций корпорации Three Gorges.",
+    "600795": "Один из крупнейших энергогенераторов Китая (уголь и ВИЭ).",
+    "600886": "Оператор гидро- и теплоэлектростанций (группа SDIC).",
+    "003816": "Второй по величине оператор АЭС Китая.",
+    "600674": "Гидроэнергетическая компания провинции Сычуань.",
+    "600011": "Крупнейший оператор угольной тепловой генерации Китая.",
+    "600023": "Энергетический оператор провинции Чжэцзян.",
+    "600027": "Крупная теплоэнергетическая компания группы Huadian.",
+    # --- ChiNext New Energy (399266) ---
+    "300124": "Крупнейший китайский производитель промышленной автоматизации и приводов.",
+    "300274": "Мировой лидер по инверторам для солнечной энергетики.",
+    "300014": "Один из крупнейших производителей литий-ионных аккумуляторов.",
+    "300450": "Мировой лидер оборудования для производства аккумуляторных батарей.",
+    "300757": "Производитель автоматических линий для фотоэлектрического производства.",
+    "300037": "Ведущий производитель электролитов для литий-ионных батарей.",
+    "300207": "Производитель аккумуляторов для электроники и электромобилей.",
+    "300316": "Производитель оборудования для солнечного кремния и сапфировых пластин.",
+    # --- CSI 500 Quality Growth (930939) ---
+    "600988": "Китайская золотодобывающая компания с рудниками в трёх странах.",
+    "300054": "Производитель полупроводниковых материалов и расходных компонентов.",
+    "002281": "Производитель оптических чипов и модулей связи.",
+    "002966": "Городской коммерческий банк провинции Цзянсу.",
+    "300759": "Контрактная разработка и испытания лекарств (CDMO).",
+    "601233": "Крупнейший в мире производитель полиэфирного волокна.",
+    "600885": "Крупнейший в Китае производитель электромагнитных реле.",
+    "600601": "Производитель печатных плат и ИТ-оборудования.",
+    # --- CSI Guosen Value (931052) ---
+    "603565": "Крупнейший оператор контейнерных перевозок по внутренним водным путям Китая.",
+    "603939": "Одна из крупнейших аптечных сетей Китая.",
+    "603233": "Крупная аптечная сеть Юга Китая.",
+    "601900": "Издательско-медиахолдинг провинции Гуандун.",
+    "601872": "Крупный оператор танкерного и балкерного флота (группа China Merchants).",
+    "002768": "Производитель модифицированных полимерных материалов.",
+    "000739": "CDMO-производитель фармацевтических субстанций и препаратов.",
+    "300979": "Контрактный производитель обуви для мировых брендов.",
+    "000902": "Один из крупнейших производителей сложных удобрений Китая.",
+    "601919": "Четвёртый в мире контейнерный морской перевозчик.",
 }
 
 
@@ -563,13 +692,17 @@ def _caption(index_key: str, date: str) -> str:
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_top10(index_key: str) -> Optional[dict]:
     """
-    Returns {"df": DataFrame[№, Компания, Тикер, Вес_%, Описание],
-             "date": str, "caption": str} or None.
+    Returns either the standard single-table dict
+    {"df": DataFrame[№, Компания, Тикер, Вес_%, Описание], "date": str,
+     "caption": str} or, for the composite strategy, a multi-section dict
+    {"composite": True, "sections": [{"title", "df", "date"}], "caption": str}.
 
     Serves the cached snapshot while it is younger than ~a month; otherwise
     refetches from the live source and appends the new snapshot to the
     `holdings_cache` Google-Sheets tab (append-only).
     """
+    if index_key == "new_energy":
+        return _composite_new_energy_holdings()
     if index_key not in HOLDINGS_SOURCES:
         return None
     snap = _read_cache(index_key)
@@ -586,9 +719,42 @@ def get_top10(index_key: str) -> Optional[dict]:
     return None
 
 
-def _decorate(index_key: str, snap: dict) -> dict:
+def _section_snapshot(index_key: str) -> Optional[dict]:
+    """Fresh/cached/stale snapshot of one sub-index of the composite."""
+    snap = _read_cache(index_key)
+    if snap and _fresh_enough(snap):
+        return snap
+    fresh = _fetch(index_key)
+    if fresh and fresh.get("rows"):
+        _append_cache(index_key, fresh)
+        return fresh
+    return snap  # stale is better than nothing
+
+
+def _composite_new_energy_holdings() -> Optional[dict]:
+    """The composite strategy: one section per ETF, top-3 stocks of each
+    underlying index (the same official weight files as the other rows)."""
+    sections = []
+    for sec in NEW_ENERGY_SECTIONS:
+        snap = _section_snapshot(sec["index_key"])
+        if not snap or not snap.get("rows"):
+            continue
+        decorated = _decorate(sec["index_key"], snap, top_n=COMPOSITE_TOP_N)
+        sections.append({"title": sec["title"], "df": decorated["df"],
+                         "date": decorated["date"]})
+    if not sections:
+        return None
+    caption = ("Стратегия «Новая энергетика Китая» — композитная: три ETF "
+               "(159326 · 159009 · 562960). В каждой секции — топ-"
+               f"{COMPOSITE_TOP_N} крупнейших акций подлежащего индекса по "
+               "официальным файлам csindex.com.cn / cnindex.com.cn. "
+               "Обновляется раз в месяц.")
+    return {"composite": True, "sections": sections, "caption": caption}
+
+
+def _decorate(index_key: str, snap: dict, top_n: int = TOP_N) -> dict:
     is_hk = HOLDINGS_SOURCES[index_key]["source"] == "hk_etf"
-    rows = sorted(snap["rows"], key=lambda x: -x["weight"])[:TOP_N]
+    rows = sorted(snap["rows"], key=lambda x: -x["weight"])[:top_n]
     data = []
     for i, r in enumerate(rows, 1):
         data.append({
