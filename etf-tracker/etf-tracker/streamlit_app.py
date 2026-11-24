@@ -196,16 +196,33 @@ if not series_options:
 
 @st.fragment(run_every=timedelta(minutes=30))
 def render_dashboard(series_options: dict):
-    # --- SMART 17:30 CACHE CLEAR ---
+    # --- SMART AFTER-CLOSE REFRESH ---
+    # After 17:30 Beijing time the app may fetch the bar of the last completed
+    # trading day. If that bar is still missing (data source lag or outage),
+    # wipe the caches and rerun the whole script. The fragment re-executes
+    # every 30 minutes, so a lagging source keeps being retried (at most one
+    # wipe per ~25 minutes) until the data actually catches up - previously
+    # an open tab could stay on Friday's data all evening after one failed
+    # fetch.
     now_beijing = datetime.now(BEIJING_TZ)
-    today_str = now_beijing.strftime("%Y-%m-%d")
-    
-    # If it's past 17:30, and we haven't cleared the cache today, wipe it!
-    if now_beijing.hour > 17 or (now_beijing.hour == 17 and now_beijing.minute >= 30):
-        if st.session_state.get("last_cache_clear_date") != today_str:
-            st.cache_data.clear()
-            st.session_state["last_cache_clear_date"] = today_str
-            st.rerun()
+    after_close = now_beijing.hour > 17 or (now_beijing.hour == 17 and now_beijing.minute >= 30)
+    if after_close:
+        try:
+            target_day = pd.Timestamp(data_fetch._get_last_trading_day())
+        except Exception:
+            target_day = None
+        series_all = [s for s in list(series_options.values()) + [csi300_series]
+                      if s is not None]
+        data_dates = [s.dropna().index.max() for s in series_all if not s.dropna().empty]
+        latest_data = max(data_dates) if data_dates else None
+        stale = target_day is not None and (latest_data is None or latest_data < target_day)
+        if stale:
+            last_wipe = st.session_state.get("last_stale_wipe_ts")
+            if last_wipe is None or (pd.Timestamp.now() - last_wipe).total_seconds() > 1500:
+                st.session_state["last_stale_wipe_ts"] = pd.Timestamp.now()
+                st.session_state["last_cache_clear_date"] = now_beijing.strftime("%Y-%m-%d")
+                st.cache_data.clear()
+                st.rerun()
     # --------------------------------
 
     st.subheader("Performance chart")
@@ -317,15 +334,44 @@ def render_dashboard(series_options: dict):
         with st.spinner("Fetching index valuations (once per day after market close)…"):
             pe_df = index_valuation.get_pe_table()
         if not pe_df.empty:
+            # median column as text: "45.12" for the official csindex history,
+            # "45.12*" for the accumulating own-snapshots median, "—" otherwise
+            med_col: list[str] = []
+            for _, r in pe_df.iterrows():
+                med = r.get("pe_median")
+                if med is None or pd.isna(med):
+                    med_col.append("—")
+                else:
+                    med_col.append(f"{float(med):.2f}" + ("*" if bool(r.get("median_acc")) else ""))
             display_df = pe_df.set_index("label")[["pe"]].copy()
             display_df.columns = ["P/E (TTM)"]
+            display_df["Медиана P/E, 5 лет"] = med_col
             display_df.index.name = None
-            styled_pe = display_df.style.format("{:.2f}", na_rep="—")
+            styled_pe = display_df.style.format({"P/E (TTM)": "{:.2f}"}, na_rep="—")
             st.table(styled_pe)
-            st.caption(
+
+            caption = (
                 "Это TTM P/E индекса на основе данных из публичных китайских "
-                "финансовых агрегаторов."
+                "финансовых агрегаторов. Медиана P/E за 5 лет: для CSI-индексов "
+                "— по официальной истории csindex.com.cn. Для CNI, гонконгских "
+                "строк и композитной стратегии официальной бесплатной истории "
+                "P/E не существует (проверено 24.11.2026: cnindex и HSI "
+                "публикуют только текущий P/E) — медиана со звёздочкой (*) "
+                "считается по собственным ежедневным срезам в Google Sheets "
+                "(накапливаются с 06.11.2026 и пересчитываются автоматически, "
+                "со временем станут полноценной 5-летней медианой). Стратегия "
+                "«Новая энергетика Китая» — средневзвешенный P/E по трём ETF "
+                "(веса — из одноимённого портфеля в Google Sheets, иначе равные)."
             )
+            # Danjuan's published whole-history percentile (Hang Seng TECH)
+            pct_rows = pe_df[pe_df["pe_percentile"].notna()] if "pe_percentile" in pe_df else pd.DataFrame()
+            if not pct_rows.empty:
+                p = float(pct_rows.iloc[0]["pe_percentile"])
+                caption += (f" {pct_rows.iloc[0]['label']}: текущий P/E ниже, "
+                            f"чем в {100 * (1 - p):.0f}% всех дневных значений за "
+                            f"историю индекса (перцентиль Danjuan, обновляется "
+                            f"ежедневно).")
+            st.caption(caption)
         else:
             st.info("Index valuation data is not available right now.")
     except Exception:
@@ -341,13 +387,11 @@ def render_dashboard(series_options: dict):
             holdings = index_holdings.get_top10(sel_key)
     except Exception:
         holdings = None
-    if holdings is None or holdings["df"].empty:
-        st.info("Состав этого индекса сейчас недоступен — попробуйте позже.")
-    else:
-        hdf = holdings["df"]
-        max_w = float(hdf["Вес, %"].max()) if not hdf["Вес, %"].dropna().empty else 1.0
+
+    def _holdings_table(df: pd.DataFrame):
+        max_w = float(df["Вес, %"].max()) if not df["Вес, %"].dropna().empty else 1.0
         st.dataframe(
-            hdf,
+            df,
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -357,6 +401,18 @@ def render_dashboard(series_options: dict):
                 ),
             },
         )
+
+    if holdings is None or (not holdings.get("composite") and holdings.get("df", pd.DataFrame()).empty):
+        st.info("Состав этого индекса сейчас недоступен — попробуйте позже.")
+    elif holdings.get("composite"):
+        # composite strategy: one section per ETF, top-3 stocks each
+        for sec in holdings["sections"]:
+            st.markdown(f"##### {sec['title']}")
+            _holdings_table(sec["df"])
+            st.caption(f"Веса на {sec['date']} — официальный файл индекса.")
+        st.caption(holdings["caption"])
+    else:
+        _holdings_table(holdings["df"])
         st.caption(holdings["caption"])
 
 render_dashboard(series_options)
