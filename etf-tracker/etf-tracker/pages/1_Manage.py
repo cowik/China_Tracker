@@ -32,6 +32,14 @@ REBALANCE_OPTIONS = {
     "annual": "Annually",
 }
 
+# Saves are cancelled when the tab could not be read from Google Sheets:
+# writing an editor that was filled from a failed (empty) read would erase
+# the tab's real contents.
+_UNREADABLE_MSG = (
+    "Google Sheets could not be read just now, so the save was cancelled to "
+    "avoid erasing any data. Reload the page and try again."
+)
+
 def _deduplicate_index_data(data):
     """Helper to remove duplicate dates from DataFrames, Series, or dicts of them."""
     if isinstance(data, pd.DataFrame):
@@ -50,9 +58,12 @@ def positions_editor(tab_name: str, label: str):
     current_freq = sheets_db.get_rebalance_frequency(label)
     chosen_freq = st.selectbox("Rebalancing", options=list(REBALANCE_OPTIONS.keys()), format_func=lambda k: REBALANCE_OPTIONS[k], index=list(REBALANCE_OPTIONS.keys()).index(current_freq), key=f"rebal_{tab_name}")
     if chosen_freq != current_freq:
-        sheets_db.save_rebalance_frequency(label, chosen_freq)
-        st.success(f"Rebalancing set to: {REBALANCE_OPTIONS[chosen_freq]}")
-        st.rerun()
+        try:
+            sheets_db.save_rebalance_frequency(label, chosen_freq)
+            st.success(f"Rebalancing set to: {REBALANCE_OPTIONS[chosen_freq]}")
+            st.rerun()
+        except sheets_db.SheetsWriteBlockedError:
+            st.error(_UNREADABLE_MSG)
 
     df = sheets_db.read_df(tab_name)
     for col in POSITION_COLS:
@@ -72,84 +83,104 @@ def positions_editor(tab_name: str, label: str):
     else:
         st.caption("No positions yet – add rows below using the editor.")
 
+    if sheets_db.read_failed(tab_name):
+        st.error(
+            "This positions tab could not be read from Google Sheets, so the "
+            "editor below may be showing an empty table. **Do not save** — "
+            "reload the page first (saving an unread tab would erase it)."
+        )
+
     edited = st.data_editor(df[list(POSITION_COLS.keys())], column_config=POSITION_COLS, num_rows="dynamic", use_container_width=True, key=f"editor_{tab_name}")
 
     if st.button("Save changes", key=f"save_{tab_name}"):
-        clean = edited.dropna(subset=["ticker"]).copy()
-        clean["ticker"] = clean["ticker"].astype(str).str.strip()
-        # FIX: Safely convert dates to strings, replacing NaT with empty string
-        clean["purchase_date"] = pd.to_datetime(clean["purchase_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna('')
-        sheets_db.write_df(tab_name, clean)
-        sheets_db.clear_caches()
-        st.success("Saved.")
-        st.rerun()
+        if sheets_db.read_failed(tab_name):
+            st.error(_UNREADABLE_MSG)
+        else:
+            clean = edited.dropna(subset=["ticker"]).copy()
+            clean["ticker"] = clean["ticker"].astype(str).str.strip()
+            # FIX: Safely convert dates to strings, replacing NaT with empty string
+            clean["purchase_date"] = pd.to_datetime(clean["purchase_date"], errors="coerce").dt.strftime('%Y-%m-%d').fillna('')
+            sheets_db.write_df(tab_name, clean)
+            sheets_db.clear_caches()
+            st.success("Saved.")
+            st.rerun()
 
     if not df.empty:
         st.divider()
         st.subheader("⚖️ Rebalance (save live performance to backtest)")
-        
+
         # FIX: Add a date input so you can specify when the old portfolio ends
         default_rebal_date = pd.Timestamp.now().normalize()
         rebal_date = st.date_input("Rebalance Date", value=default_rebal_date, key=f"rebal_date_{tab_name}")
         rebal_date = pd.Timestamp(rebal_date)
-        
+
         total_weight = df["weight"].sum()
         missing_dates = df["purchase_date"].isna().any()
         weights_valid = abs(total_weight - 100) <= 0.5
-        
+
         if missing_dates:
             st.error("Please ensure all positions have a Purchase Date before rebalancing.")
         elif not weights_valid:
             st.error(f"Weights must sum to 100% to rebalance. Currently sum to {total_weight:.1f}%.")
 
         if st.button(f"Rebalance {label}", key=f"rebalance_{tab_name}", disabled=(not weights_valid or missing_dates)):
-            holdings = []
-            for _, row in df.iterrows():
-                try:
-                    holdings.append({"ticker": str(row["ticker"]).strip(), "asset_type": str(row.get("asset_type", "stock")).strip().lower() or "stock", "weight": float(row["weight"]) / 100.0, "inception_date": pd.to_datetime(row["purchase_date"])})
-                except (KeyError, ValueError, TypeError):
-                    continue
-            if not holdings:
-                st.warning("No valid positions to rebalance.")
-            else:
-                price_data = data_fetch.get_prices_batch(holdings)
-                # FIX: Sanitize price data to remove duplicate dates
-                price_data = _deduplicate_index_data(price_data)
-                
-                backtest_index_values = load_backtest(label)
-                rebalance_freq = sheets_db.get_rebalance_frequency(label)
-                live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
-                
-                # FIX: Pass rebal_date as end_date so it only calculates up to that date
-                live_index = returns.compute_live_index(
-                    holdings, price_data, 
-                    rebalance_frequency=rebalance_freq, 
-                    live_start_date=live_start_date,
-                    end_date=rebal_date
+            if sheets_db.read_failed("backtest_history"):
+                # Rebalancing rewrites the whole backtest_history tab; if it
+                # could not be read, saving now would erase the history of
+                # every other portfolio.
+                st.error(
+                    "Backtest history could not be read from Google Sheets, so the "
+                    "rebalance was cancelled — this protects the saved history of "
+                    "all portfolios. Reload the page and try again."
                 )
-                combined = returns.chain_link_backtest(backtest_index_values, live_index)
-                
-                # FIX: Drop duplicates AND remove any dates after the Rebalance Date
-                if not combined.empty:
-                    combined = combined[~combined.index.duplicated(keep='last')]
-                    combined = combined[combined.index <= rebal_date]
-                    
-                if combined.empty:
-                    st.warning("Could not compute combined index.")
+            else:
+                holdings = []
+                for _, row in df.iterrows():
+                    try:
+                        holdings.append({"ticker": str(row["ticker"]).strip(), "asset_type": str(row.get("asset_type", "stock")).strip().lower() or "stock", "weight": float(row["weight"]) / 100.0, "inception_date": pd.to_datetime(row["purchase_date"])})
+                    except (KeyError, ValueError, TypeError):
+                        continue
+                if not holdings:
+                    st.warning("No valid positions to rebalance.")
                 else:
-                    rebalance_df = combined.reset_index()
-                    rebalance_df.columns = ["date", "index_value"]
-                    rebalance_df["portfolio"] = label
-                    rebalance_df["date"] = pd.to_datetime(rebalance_df["date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna('')
-                    rebalance_df["index_value"] = pd.to_numeric(rebalance_df["index_value"], errors="coerce")
-                    existing = sheets_db.read_df("backtest_history")
-                    if not existing.empty:
-                        existing = existing[existing["portfolio"] != label]
-                    combined_df = pd.concat([existing, rebalance_df[["date", "portfolio", "index_value"]]], ignore_index=True)
-                    sheets_db.write_df("backtest_history", combined_df)
-                    sheets_db.clear_caches()
-                    st.success(f"✅ Rebalance complete! {label} backtest now includes performance up to {rebal_date.strftime('%Y-%m-%d')}.")
-                    st.rerun()
+                    price_data = data_fetch.get_prices_batch(holdings)
+                    # FIX: Sanitize price data to remove duplicate dates
+                    price_data = _deduplicate_index_data(price_data)
+
+                    backtest_index_values = load_backtest(label)
+                    rebalance_freq = sheets_db.get_rebalance_frequency(label)
+                    live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
+
+                    # FIX: Pass rebal_date as end_date so it only calculates up to that date
+                    live_index = returns.compute_live_index(
+                        holdings, price_data,
+                        rebalance_frequency=rebalance_freq,
+                        live_start_date=live_start_date,
+                        end_date=rebal_date
+                    )
+                    combined = returns.chain_link_backtest(backtest_index_values, live_index)
+
+                    # FIX: Drop duplicates AND remove any dates after the Rebalance Date
+                    if not combined.empty:
+                        combined = combined[~combined.index.duplicated(keep='last')]
+                        combined = combined[combined.index <= rebal_date]
+
+                    if combined.empty:
+                        st.warning("Could not compute combined index.")
+                    else:
+                        rebalance_df = combined.reset_index()
+                        rebalance_df.columns = ["date", "index_value"]
+                        rebalance_df["portfolio"] = label
+                        rebalance_df["date"] = pd.to_datetime(rebalance_df["date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna('')
+                        rebalance_df["index_value"] = pd.to_numeric(rebalance_df["index_value"], errors="coerce")
+                        existing = sheets_db.read_df("backtest_history")
+                        if not existing.empty:
+                            existing = existing[existing["portfolio"] != label]
+                        combined_df = pd.concat([existing, rebalance_df[["date", "portfolio", "index_value"]]], ignore_index=True)
+                        sheets_db.write_df("backtest_history", combined_df)
+                        sheets_db.clear_caches()
+                        st.success(f"✅ Rebalance complete! {label} backtest now includes performance up to {rebal_date.strftime('%Y-%m-%d')}.")
+                        st.rerun()
 
 def load_backtest(portfolio_label: str) -> pd.Series:
     df = sheets_db.read_df("backtest_history")
@@ -189,7 +220,7 @@ def _compute_portfolio_index_cached(tab_name: str, portfolio_label: str, holding
     price_data = data_fetch.get_prices_batch(holdings)
     # FIX: Sanitize price data
     price_data = _deduplicate_index_data(price_data)
-    
+
     backtest_index_values = load_backtest(portfolio_label)
     rebalance_freq = sheets_db.get_rebalance_frequency(portfolio_label)
     live_start_date = backtest_index_values.index[-1] if not backtest_index_values.empty else None
@@ -207,7 +238,7 @@ def _compute_portfolio_index_cached(tab_name: str, portfolio_label: str, holding
         )
         if not live_index.empty and live_start_date is not None:
             live_index = live_index[live_index.index >= live_start_date]
-            
+
     combined = returns.chain_link_backtest(backtest_index_values, live_index)
     # FIX: Drop duplicates in final combined output
     if not combined.empty:
@@ -323,12 +354,15 @@ elif section == "Watchlist ETFs":
         df["ticker"] = df["ticker"].astype(str).str.strip()
     edited = st.data_editor(df[list(cols.keys())], column_config=cols, num_rows="dynamic", use_container_width=True, key="editor_watchlist")
     if st.button("Save changes", key="save_watchlist"):
-        clean = edited.dropna(subset=["ticker"]).copy()
-        clean["ticker"] = clean["ticker"].astype(str).str.strip()
-        sheets_db.write_df("watchlist_etfs", clean)
-        sheets_db.clear_caches()
-        st.success("Saved.")
-        st.rerun()
+        if sheets_db.read_failed("watchlist_etfs"):
+            st.error(_UNREADABLE_MSG)
+        else:
+            clean = edited.dropna(subset=["ticker"]).copy()
+            clean["ticker"] = clean["ticker"].astype(str).str.strip()
+            sheets_db.write_df("watchlist_etfs", clean)
+            sheets_db.clear_caches()
+            st.success("Saved.")
+            st.rerun()
 
 elif section == "Backtest history upload":
     st.subheader("Upload historical backtest returns")
@@ -368,18 +402,25 @@ elif section == "Backtest history upload":
                 else:
                     st.dataframe(new_data, use_container_width=True)
                     if st.button("Confirm and save"):
-                        existing = sheets_db.read_df("backtest_history")
-                        uploaded_pf = set(new_data["Portfolio"])
-                        if not existing.empty:
-                            existing = existing[~existing["portfolio"].isin(uploaded_pf)]
-                        new_data = new_data.rename(columns={"Date": "date", "Portfolio": "portfolio", "Index Value": "index_value"})
-                        new_data["date"] = pd.to_datetime(new_data["date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna('')
-                        new_data["index_value"] = pd.to_numeric(new_data["index_value"], errors="coerce")
-                        combined_df = pd.concat([existing, new_data[["date", "portfolio", "index_value"]]], ignore_index=True)
-                        sheets_db.write_df("backtest_history", combined_df)
-                        sheets_db.clear_caches()
-                        st.success("Backtest history saved.")
-                        st.rerun()
+                        if sheets_db.read_failed("backtest_history"):
+                            st.error(
+                                "Backtest history could not be read from Google Sheets, so "
+                                "the upload was cancelled — this protects the saved history of "
+                                "all portfolios. Reload the page and try again."
+                            )
+                        else:
+                            existing = sheets_db.read_df("backtest_history")
+                            uploaded_pf = set(new_data["Portfolio"])
+                            if not existing.empty:
+                                existing = existing[~existing["portfolio"].isin(uploaded_pf)]
+                            new_data = new_data.rename(columns={"Date": "date", "Portfolio": "portfolio", "Index Value": "index_value"})
+                            new_data["date"] = pd.to_datetime(new_data["date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna('')
+                            new_data["index_value"] = pd.to_numeric(new_data["index_value"], errors="coerce")
+                            combined_df = pd.concat([existing, new_data[["date", "portfolio", "index_value"]]], ignore_index=True)
+                            sheets_db.write_df("backtest_history", combined_df)
+                            sheets_db.clear_caches()
+                            st.success("Backtest history saved.")
+                            st.rerun()
 
     st.divider()
     st.write("Current stored backtest history:")
@@ -392,18 +433,24 @@ elif section == "Manage Portfolios":
         new_label = st.text_input("New Portfolio Name")
         submitted = st.form_submit_button("Add Portfolio")
         if submitted and new_label:
-            sheets_db.add_portfolio(new_label)
-            st.success(f"Added portfolio: {new_label}")
-            st.rerun()
+            try:
+                sheets_db.add_portfolio(new_label)
+                st.success(f"Added portfolio: {new_label}")
+                st.rerun()
+            except sheets_db.SheetsWriteBlockedError:
+                st.error(_UNREADABLE_MSG)
     st.divider()
     st.write("**Existing Portfolios:**")
     for tab, label in PORTFOLIOS.items():
         col1, col2 = st.columns([4, 1])
         col1.write(f"{label} (`{tab}`)")
         if col2.button("Delete", key=f"del_{tab}"):
-            sheets_db.delete_portfolio(tab, label)
-            st.warning(f"Deleted {label}")
-            st.rerun()
+            try:
+                sheets_db.delete_portfolio(tab, label)
+                st.warning(f"Deleted {label}")
+                st.rerun()
+            except sheets_db.SheetsWriteBlockedError:
+                st.error(_UNREADABLE_MSG)
 
 elif section == "Reorder Items":
     st.subheader("Reorder Portfolios & ETFs")
@@ -422,10 +469,13 @@ elif section == "Reorder Items":
         df_order = pd.DataFrame({"Item": all_items, "Sort Order": order_list})
         edited = st.data_editor(df_order, num_rows="fixed", use_container_width=True, key="order_editor")
         if st.button("Save Order"):
-            sorted_df = edited.sort_values("Sort Order")
-            sheets_db.save_display_order(sorted_df["Item"].tolist())
-            st.success("Display order saved!")
-            st.rerun()
+            try:
+                sorted_df = edited.sort_values("Sort Order")
+                sheets_db.save_display_order(sorted_df["Item"].tolist())
+                st.success("Display order saved!")
+                st.rerun()
+            except sheets_db.SheetsWriteBlockedError:
+                st.error(_UNREADABLE_MSG)
 
 elif section == "Export Chart to Excel":
     st.subheader("📊 Export chart to Excel")
